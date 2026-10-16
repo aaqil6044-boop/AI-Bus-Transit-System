@@ -1,0 +1,476 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Bengaluru Transit Assistant</title>
+    
+<link rel="stylesheet" href="/static/styles.css?v=20261025-gemini-1">
+<link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
+</head>
+
+<body>
+
+<div class="app-shell">
+
+    <!-- MAP -->
+    <main id="map"></main>
+
+    <!-- TOP BAR -->
+    <header class="topbar">
+
+        <div class="brand">
+            <div class="brand-mark">B</div>
+
+            <div>
+                <div class="brand-title">Bengaluru Transit</div>
+                <div class="brand-subtitle">
+                    Scheduled BMTC bus journeys
+                </div>
+            </div>
+        </div>
+
+        <div class="top-actions">
+
+            <button
+                id="locateBtn"
+                class="icon-button"
+                title="Use my location"
+            >
+                ◉
+            </button>
+
+            <button
+                id="layersBtn"
+                class="icon-button"
+                title="Map layers"
+            >
+                ◈
+            </button>
+
+            <button
+                id="profileBtn"
+                class="profile-button"
+                title="Travel preferences"
+            >
+                <span>●</span>
+            </button>
+
+        </div>
+
+    </header>
+
+
+    <!-- SEARCH / AI PANEL -->
+    <section class="command-panel">
+
+        <div class="panel-header">
+
+            <div>
+                <div class="eyebrow">
+                    BENGALURU
+                </div>
+
+                <h1>
+                    Where are you going?
+                </h1>
+
+                <p>
+                    Plan a bus journey, or type a command below.
+                </p>
+            </div>
+
+            <button
+                id="newJourneyBtn"
+                class="small-button"
+            >
+                + New
+            </button>
+
+        </div>
+
+
+        <!-- FROM / TO -->
+        <div class="journey-search">
+
+            <div class="search-row">
+
+                <div class="route-dot origin-dot"></div>
+
+                <div class="search-field">
+
+                    <label for="originInput">
+                        FROM <button type="button" id="originMapBtn" class="map-point-button">Pick on map</button>
+                    </label>
+
+                    <input
+                        id="originInput"
+                        type="text"
+                        autocomplete="off"
+                        placeholder="Your starting point"
+                    >
+
+                    <div
+                        id="originSuggestions"
+                        class="suggestions"
+                    ></div>
+
+                </div>
+
+            </div>
+
+
+            <div class="route-line"></div>
+            <button type="button" id="swapBtn" class="swap-button" title="Swap start and destination" aria-label="Swap start and destination">⇅</button>
+
+
+            <div class="search-row">
+
+                <div class="route-dot destination-dot"></div>
+
+                <div class="search-field">
+
+                    <label for="destinationInput">
+                        TO <button type="button" id="destinationMapBtn" class="map-point-button">Pick on map</button>
+                    </label>
+
+                    <input
+                        id="destinationInput"
+                        type="text"
+                        autocomplete="off"
+                        placeholder="Where do you want to go?"
+                    >
+
+                    <div
+                        id="destinationSuggestions"
+                        class="suggestions"
+                    ></div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- DEPARTURE TIME -->
+        <div class="depart-row" role="group" aria-label="When do you want to leave?">
+            <span class="depart-label" id="departLabel">LEAVE</span>
+            <button type="button" id="departNow" class="depart-chip active" aria-pressed="true">Now</button>
+            <label class="depart-chip depart-time-chip" for="departInput">
+                <span>At</span>
+                <input id="departInput" type="time" aria-labelledby="departLabel" step="300">
+            </label>
+            <span id="departHint" class="depart-hint">Timetable times, not live arrivals.</span>
+        </div>
+
+        <!-- AI COMMAND -->
+        <div class="ai-command">
+
+            <div class="ai-icon">
+                ✦
+            </div>
+
+            <div class="ai-input-wrapper">
+
+                <input
+                    id="aiInput"
+                    type="text"
+                    placeholder="Try: from Hope Farm to Majestic, less walking"
+                    autocomplete="off"
+                >
+
+                <button
+                    id="voiceBtn"
+                    class="voice-button"
+                    title="Speak a command"
+                >
+                    🎙
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <button
+            id="planBtn"
+            class="primary-button"
+        >
+            <span>Find routes</span>
+            <span>→</span>
+        </button>
+
+
+        <!-- QUICK ACTIONS -->
+        <div class="quick-actions">
+
+            <button class="quick-chip" type="button" data-preference="less_walking" aria-pressed="false">
+                🚶 Less walking
+            </button>
+
+            <button class="quick-chip" type="button" data-preference="fewer_transfers" aria-pressed="false">
+                🔄 Fewer transfers
+            </button>
+
+            <button class="quick-chip" type="button" data-preference="fastest" aria-pressed="false">
+                ⚡ Fastest
+            </button>
+
+        </div>
+
+    </section>
+
+
+    <!-- GEMINI CHAT -->
+    <aside
+        id="chatPanel"
+        class="chat-panel"
+    >
+
+        <div class="chat-header">
+
+            <div class="gemini-title">
+
+                <div class="gemini-orb">
+                    ✦
+                </div>
+
+                <div>
+                    <strong>Trip assistant</strong>
+
+                    <span id="chatEngine">
+                        Built-in helper · routes from BMTC data
+                    </span>
+                </div>
+
+            </div>
+
+            <button
+                id="closeChatBtn"
+                class="close-button"
+            >
+                ×
+            </button>
+
+        </div>
+
+
+        <div
+            id="chatMessages"
+            class="chat-messages"
+        >
+
+            <div class="assistant-message">
+
+                <div class="message-avatar">
+                    ✦
+                </div>
+
+                <div class="message-content">
+
+                    <p>
+                        I plan Bengaluru bus journeys from what you type or say.
+                        Routes, buses and times always come from the BMTC stops and timetable on this computer.
+                    </p>
+
+                    <p>
+                        Try saying:
+                    </p>
+
+                    <div class="example-command">
+                        "Take me from Hope Farm to Majestic."
+                    </div>
+                    <div class="example-command">
+                        "White Field to KR Market, less walking, leave at 9:30 am"
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <div class="chat-input-area">
+
+            <button
+                id="chatVoiceBtn"
+                class="chat-icon-button"
+                title="Voice input"
+            >
+                🎙
+            </button>
+
+            <input
+                id="chatInput"
+                type="text"
+                placeholder="e.g. Hope Farm to Majestic" aria-label="Message the trip assistant" maxlength="300"
+            >
+
+            <button
+                id="chatSendBtn"
+                class="send-button"
+            >
+                ↑
+            </button>
+
+        </div>
+
+    </aside>
+
+
+    <!-- ROUTE RESULTS -->
+    <section
+        id="routePanel"
+        class="route-panel"
+    >
+        <button id="routeGrip" class="route-grip" type="button" aria-label="Resize journey options: drag, or press to expand" title="Drag to resize · click to expand or return to standard size"><span></span></button>
+
+        <div class="route-panel-header">
+
+            <div>
+
+                <div class="eyebrow">
+                    JOURNEY OPTIONS
+                </div>
+
+                <h2>
+                    Recommended routes
+                </h2>
+                <p id="routeMeta" class="route-meta"></p>
+                <div class="route-prefs" role="group" aria-label="Rank journeys by">
+                    <button class="quick-chip" type="button" data-preference="less_walking" aria-pressed="false">🚶 Less walking</button>
+                    <button class="quick-chip" type="button" data-preference="fewer_transfers" aria-pressed="false">🔄 Fewer transfers</button>
+                    <button class="quick-chip" type="button" data-preference="fastest" aria-pressed="false">⚡ Fastest</button>
+                </div>
+
+            </div>
+
+            <div class="route-panel-actions">
+            <button id="expandRoutesBtn" class="close-button" type="button" aria-label="Expand journey options" aria-pressed="false" title="Expand">⤢</button>
+            <button
+                id="closeRoutesBtn"
+                class="close-button"
+            >
+                ×
+            </button>
+            </div>
+
+        </div>
+
+        <div class="route-panel-content">
+            <div
+                id="routeResults"
+                class="route-results"
+            ></div>
+        </div>
+
+    </section>
+
+
+    <!-- MAP LAYERS -->
+    <section
+        id="layersPanel"
+        class="layers-panel"
+    >
+
+        <div class="layers-header">
+
+            <strong>
+                Map layers
+            </strong>
+
+            <button
+                id="closeLayersBtn"
+                class="close-button"
+            >
+                ×
+            </button>
+
+        </div>
+
+        <label class="layer-option">
+            <input type="checkbox" checked>
+            <span>Journey paths</span>
+        </label>
+
+        <p class="guide-disclaimer">Walking connections are included in each journey path.</p>
+
+    </section>
+
+
+    <button id="networkBtn" class="network-toggle" type="button">Scheduled network</button>
+    <section id="networkPanel" class="network-panel" hidden aria-label="Scheduled bus network">
+        <button id="closeNetworkBtn" class="close-button" type="button" aria-label="Close network">×</button>
+        <div class="eyebrow">NETWORK COVERAGE</div>
+        <h2>Explore the bus network</h2>
+        <div id="networkResults"></div>
+    </section>
+    <section id="journeyGuide" class="journey-guide" hidden aria-label="Journey guidance">
+        <div class="eyebrow">YOUR JOURNEY · DEVICE GPS</div>
+        <h2 id="guideTitle"></h2>
+        <p id="guideDetail"></p>
+        <p id="guideGps" role="status" aria-live="polite">Waiting for your location…</p>
+        <div class="guide-controls">
+            <button id="guidePrev" type="button">Previous</button>
+            <button id="guideNext" type="button">Next step</button>
+            <button id="guideFollow" type="button">Recenter</button>
+            <button id="guideOptions" type="button">Route options</button>
+            <button id="guideStop" type="button">Stop</button>
+        </div>
+        <div id="guideRouteSummary" class="guide-route-summary"></div>
+        <p class="guide-disclaimer">Journey times come from the BMTC timetable. Bus markers appear only when BMTC publishes a current position for a bus heading your way. Confirm boarding and transfers yourself.</p>
+    </section>
+    <section id="liveBusPanel" class="journey-guide live-bus-panel" hidden aria-label="BMTC live buses">
+        <div class="live-head">
+        <div class="eyebrow">BMTC LIVE VEHICLES</div>
+        <h2 id="liveBusTitle">Route buses</h2>
+        <p id="liveBusStatus" class="live-headline" role="status" aria-live="polite">Connecting to BMTC…</p>
+        <p id="liveBusMeta" class="live-meta"></p>
+        <div class="guide-controls live-top-controls"><button id="liveBusRefresh" type="button">Refresh now</button><button id="liveBusStop" type="button">Stop live tracking</button></div>
+        </div>
+        <div id="liveBusList"></div>
+        <div class="live-map-actions"><button id="liveBusFit" class="live-bus-button" type="button">Show these buses on the map</button>
+        <button id="liveBusFollow" class="live-bus-button" type="button" hidden>Stop following bus</button></div>
+        <div id="liveBoarding"></div>
+        <div id="liveJourneyChoice" class="live-journey-choice" hidden></div>
+        <button id="liveJourneyStart" class="start-journey-button live-journey-start" type="button" hidden>▶ Start selected journey</button>
+        <details class="guide-disclaimer"><summary>About these positions</summary>Positions and update times come from BMTC’s feed. A bus is marked “heading to your stop” only when BMTC’s own stop order shows it before your boarding stop in your direction. Old or missing timestamps are labelled STALE or NO TIMESTAMP, never live.</details>
+    </section>
+    <!-- STATUS -->
+    <div
+        id="statusToast"
+        class="status-toast"
+        role="status"
+        aria-live="polite"
+    ></div>
+    <div id="systemBanner" class="system-banner" role="alert" hidden>
+        <span id="systemBannerText"></span>
+        <button id="systemBannerRetry" type="button">Check again</button>
+        <button id="systemBannerClose" type="button" aria-label="Dismiss">×</button>
+    </div>
+
+
+    <!-- MOBILE CHAT BUTTON -->
+    <button
+        id="floatingAiBtn"
+        class="floating-ai-button"
+        title="Open trip assistant"
+    >
+        ✦
+    </button>
+
+</div>
+
+
+
+
+<script src="/static/vendor/maplibre-gl.js"></script>
+<script src="/static/app.js?v=20261025-gemini-1"></script>
+</body>
+</html>
+
+
+

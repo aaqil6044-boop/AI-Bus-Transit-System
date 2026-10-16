@@ -1,0 +1,1835 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+
+<title>Bengaluru Transit</title>
+
+<link
+    href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+    rel="stylesheet"
+/>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+}
+
+#map {
+    position: absolute;
+    inset: 0;
+}
+
+/* ---------------------------------------------------------
+   LEFT PANEL
+--------------------------------------------------------- */
+
+.panel {
+
+    position: absolute;
+
+    top: 8px;
+    left: 16px;
+
+    width: 318px;
+
+    max-height: calc(100vh - 16px);
+
+    overflow-y: auto;
+
+    padding: 20px 16px 14px;
+
+    border-radius: 20px;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(18,30,51,.97),
+            rgba(12,23,41,.96)
+        );
+
+    border:
+        1px solid rgba(255,255,255,.08);
+
+    box-shadow:
+        0 18px 45px rgba(0,0,0,.35);
+
+    backdrop-filter:
+        blur(18px);
+
+    z-index: 20;
+
+    color: white;
+}
+
+.panel::-webkit-scrollbar {
+    width: 5px;
+}
+
+.panel::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,.18);
+    border-radius: 10px;
+}
+
+.title {
+
+    font-size: 21px;
+
+    font-weight: 750;
+
+    margin:
+        0 0 26px 2px;
+
+    letter-spacing: -.3px;
+}
+
+label {
+
+    display: block;
+
+    margin:
+        0 0 6px 0;
+
+    color: #9ba9bd;
+
+    font-size: 10px;
+
+    font-weight: 700;
+
+    letter-spacing: .8px;
+
+    text-transform: uppercase;
+}
+
+input {
+
+    width: 100%;
+
+    height: 36px;
+
+    padding: 0 12px;
+
+    margin-bottom: 10px;
+
+    border-radius: 9px;
+
+    border:
+        1px solid rgba(255,255,255,.14);
+
+    background:
+        rgba(5,15,29,.75);
+
+    color: white;
+
+    outline: none;
+
+    font-size: 12px;
+
+    transition:
+        border-color .25s ease,
+        box-shadow .25s ease;
+}
+
+input:focus {
+
+    border-color: #1a73e8;
+
+    box-shadow:
+        0 0 0 3px rgba(26,115,232,.15);
+}
+
+button {
+
+    width: 100%;
+
+    height: 39px;
+
+    margin-top: 4px;
+
+    border: 0;
+
+    border-radius: 9px;
+
+    background: #5de0aa;
+
+    color: #07140f;
+
+    font-size: 12px;
+
+    font-weight: 800;
+
+    cursor: pointer;
+
+    transition:
+        transform .18s ease,
+        filter .18s ease;
+}
+
+button:hover {
+
+    filter: brightness(1.05);
+
+    transform:
+        translateY(-1px);
+}
+
+button:active {
+
+    transform:
+        translateY(1px);
+}
+
+/* ---------------------------------------------------------
+   STATUS
+--------------------------------------------------------- */
+
+#status {
+
+    min-height: 19px;
+
+    margin:
+        9px 2px 7px;
+
+    color: #64e6ae;
+
+    font-size: 10px;
+
+    font-weight: 650;
+
+    transition:
+        opacity .25s ease;
+}
+
+/* ---------------------------------------------------------
+   ROUTE CARDS
+--------------------------------------------------------- */
+
+.route-card {
+
+    position: relative;
+
+    padding:
+        13px 12px;
+
+    margin-bottom: 8px;
+
+    border-radius: 11px;
+
+    border:
+        1px solid rgba(103,147,197,.27);
+
+    background:
+        rgba(29,48,75,.72);
+
+    cursor: pointer;
+
+    transition:
+        background .4s ease,
+        border-color .4s ease,
+        box-shadow .4s ease,
+        transform .4s cubic-bezier(.2,.8,.2,1);
+
+    overflow: hidden;
+}
+
+.route-card:hover {
+
+    transform:
+        translateY(-1px);
+
+    background:
+        rgba(35,58,90,.82);
+}
+
+.route-card.selected {
+
+    border-color:
+        #1a73e8;
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(26,115,232,.20),
+            rgba(27,49,79,.90)
+        );
+
+    box-shadow:
+        0 0 0 1px rgba(26,115,232,.15),
+        0 8px 22px rgba(26,115,232,.12);
+}
+
+.route-name {
+
+    color: white;
+
+    font-size: 14px;
+
+    font-weight: 800;
+
+    margin-bottom: 8px;
+}
+
+.route-card.selected
+.route-name {
+
+    color:
+        #45a0ff;
+}
+
+.route-info {
+
+    color:
+        #e0e6ef;
+
+    font-size: 10px;
+
+    font-weight: 600;
+
+    margin-bottom: 5px;
+}
+
+.route-time {
+
+    color:
+        #8f9db0;
+
+    font-size: 9px;
+}
+
+.best {
+
+    position: absolute;
+
+    right: 9px;
+    top: 9px;
+
+    padding:
+        4px 7px;
+
+    border-radius: 20px;
+
+    background: #5de0aa;
+
+    color: #062117;
+
+    font-size: 8px;
+
+    font-weight: 900;
+}
+
+/* ---------------------------------------------------------
+   LEGEND
+--------------------------------------------------------- */
+
+.legend {
+
+    display: flex;
+
+    gap: 15px;
+
+    margin-top: 9px;
+
+    padding-top: 9px;
+
+    border-top:
+        1px solid rgba(255,255,255,.08);
+
+    color:
+        #8795a8;
+
+    font-size: 9px;
+}
+
+.legend-item {
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 5px;
+}
+
+.legend-dot {
+
+    width: 8px;
+    height: 8px;
+
+    border-radius: 50%;
+}
+
+.legend-dot.blue {
+    background: #1a73e8;
+}
+
+.legend-dot.gray {
+    background: #9aa0a6;
+}
+
+/* ---------------------------------------------------------
+   LOADING
+--------------------------------------------------------- */
+
+.loading {
+
+    opacity: .65;
+
+    pointer-events: none;
+}
+
+/* ---------------------------------------------------------
+   MAP MARKERS
+--------------------------------------------------------- */
+
+.stop-marker {
+
+    width: 25px;
+    height: 25px;
+
+    border-radius: 50% 50% 50% 0;
+
+    transform:
+        rotate(-45deg);
+
+    border:
+        3px solid white;
+
+    box-shadow:
+        0 3px 12px rgba(0,0,0,.35);
+}
+
+.stop-marker-inner {
+
+    width: 100%;
+    height: 100%;
+
+    border-radius: 50%;
+
+    background: #ea4335;
+}
+
+</style>
+</head>
+
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+
+    <div class="title">
+        Bengaluru Transit
+    </div>
+
+    <label>From</label>
+
+    <input
+        id="fromInput"
+        value="White Field Post Office"
+        autocomplete="off"
+    >
+
+    <label>To</label>
+
+    <input
+        id="toInput"
+        value="Kempegowda Bus Station(Majestic/KBS)"
+        autocomplete="off"
+    >
+
+    <button id="findButton">
+        FIND ROUTES
+    </button>
+
+    <div id="status"></div>
+
+    <div id="routes"></div>
+
+    <div class="legend">
+
+        <div class="legend-item">
+            <span class="legend-dot blue"></span>
+            Selected route
+        </div>
+
+        <div class="legend-item">
+            <span class="legend-dot gray"></span>
+            Alternatives
+        </div>
+
+    </div>
+
+</div>
+
+<script>
+
+/* =========================================================
+   MAP
+========================================================= */
+
+const map = new maplibregl.Map({
+
+    container: "map",
+
+    style:
+        "https://tiles.openfreemap.org/styles/bright",
+
+    center:
+        [77.641, 12.9716],
+
+    zoom:
+        11
+
+});
+
+map.addControl(
+    new maplibregl.NavigationControl(),
+    "bottom-right"
+);
+
+
+/* =========================================================
+   GLOBAL STATE
+========================================================= */
+
+let routes = [];
+
+let selectedRouteIndex = 0;
+
+let originStop = null;
+
+let destinationStop = null;
+
+let roadGeometryCache = new Map();
+
+
+/* =========================================================
+   STOP SEARCH
+========================================================= */
+
+async function findStop(name) {
+
+    const response =
+        await fetch(
+            "/api/stops?q=" +
+            encodeURIComponent(name)
+        );
+
+    if (!response.ok) {
+        throw new Error(
+            "Stop search failed"
+        );
+    }
+
+    const data =
+        await response.json();
+
+    const stops =
+        data.stops || [];
+
+    if (!stops.length) {
+        throw new Error(
+            "No stop found: " + name
+        );
+    }
+
+    /*
+       Keep the known verified stop for
+       White Field Post Office.
+    */
+
+    if (
+        name.toLowerCase()
+            .includes("white field post")
+    ) {
+
+        const verified =
+            stops.find(
+                s =>
+                    String(s.stop_id)
+                    === "22620"
+            );
+
+        if (verified) {
+            return verified;
+        }
+    }
+
+    return stops[0];
+}
+
+
+/* =========================================================
+   ROUTE KEY
+========================================================= */
+
+function routeKey(route) {
+
+    return [
+        route.route_name || "",
+        (route.route_numbers || []).join(","),
+        route.transfers ?? "",
+        route.total_minutes ?? ""
+    ].join("|");
+
+}
+
+
+/* =========================================================
+   REMOVE DUPLICATES
+========================================================= */
+
+function deduplicateRoutes(input) {
+
+    const seen =
+        new Set();
+
+    const output = [];
+
+    for (const route of input) {
+
+        const key =
+            routeKey(route);
+
+        if (seen.has(key)) {
+            continue;
+        }
+
+        seen.add(key);
+
+        output.push(route);
+    }
+
+    return output;
+}
+
+
+/* =========================================================
+   GET GTFS STOP COORDINATES
+========================================================= */
+
+function getCoordinates(route) {
+
+    const coords =
+        route.coordinates ||
+        route.geometry?.coordinates ||
+        [];
+
+    return coords
+        .filter(
+            c =>
+                Array.isArray(c) &&
+                c.length >= 2 &&
+                Number.isFinite(Number(c[0])) &&
+                Number.isFinite(Number(c[1]))
+        )
+        .map(
+            c => [
+                Number(c[0]),
+                Number(c[1])
+            ]
+        );
+
+}
+
+
+/* =========================================================
+   REMOVE CONSECUTIVE DUPLICATES
+========================================================= */
+
+function cleanCoordinates(coords) {
+
+    const result = [];
+
+    for (const point of coords) {
+
+        if (!result.length) {
+
+            result.push(point);
+
+            continue;
+        }
+
+        const previous =
+            result[result.length - 1];
+
+        if (
+            Math.abs(
+                previous[0] - point[0]
+            ) > 0.000001 ||
+
+            Math.abs(
+                previous[1] - point[1]
+            ) > 0.000001
+        ) {
+
+            result.push(point);
+
+        }
+    }
+
+    return result;
+}
+
+
+/* =========================================================
+   ROAD FOLLOWING GEOMETRY
+========================================================= */
+
+/*
+   The old renderer connected GTFS stop coordinates
+   directly:
+
+       stop A ---------------- stop B
+
+   That is why the line cuts through buildings/parks.
+
+   This function sends the stop sequence through OSRM
+   and receives a road-following GeoJSON LineString.
+
+   The GTFS stop order is preserved, so the route still
+   follows the transit stop sequence.
+*/
+
+async function getRoadGeometry(route) {
+
+    const original =
+        cleanCoordinates(
+            getCoordinates(route)
+        );
+
+    if (original.length < 2) {
+        return original;
+    }
+
+    /*
+       Round coordinates for a stable cache key.
+    */
+
+    const key =
+        original
+            .map(
+                p =>
+                    `${p[0].toFixed(5)},${p[1].toFixed(5)}`
+            )
+            .join(";");
+
+    if (
+        roadGeometryCache.has(key)
+    ) {
+
+        return roadGeometryCache.get(key);
+    }
+
+    /*
+       OSRM accepts:
+       longitude,latitude
+    */
+
+    const coordinateString =
+        original
+            .map(
+                p =>
+                    `${p[0]},${p[1]}`
+            )
+            .join(";");
+
+    const url =
+        "https://router.project-osrm.org/route/v1/driving/" +
+        coordinateString +
+        "?overview=full&geometries=geojson&steps=false";
+
+    try {
+
+        const response =
+            await fetch(url);
+
+        if (!response.ok) {
+            throw new Error(
+                "OSRM HTTP " +
+                response.status
+            );
+        }
+
+        const data =
+            await response.json();
+
+        if (
+            data.code !== "Ok" ||
+            !data.routes?.length
+        ) {
+
+            throw new Error(
+                "No road geometry returned"
+            );
+        }
+
+        const geometry =
+            data.routes[0]
+                .geometry
+                .coordinates;
+
+        roadGeometryCache.set(
+            key,
+            geometry
+        );
+
+        return geometry;
+
+    } catch (error) {
+
+        console.warn(
+            "Road routing failed; using GTFS stop geometry:",
+            error
+        );
+
+        /*
+           Never break the application if the
+           external road service is unavailable.
+        */
+
+        return original;
+    }
+}
+
+
+/* =========================================================
+   ROUTE SOURCE CLEANUP
+========================================================= */
+
+function clearRouteLayers() {
+
+    for (let i = 0; i < 20; i++) {
+
+        const lineId =
+            `route-line-${i}`;
+
+        const sourceId =
+            `route-source-${i}`;
+
+        if (
+            map.getLayer(lineId)
+        ) {
+
+            map.removeLayer(
+                lineId
+            );
+
+        }
+
+        if (
+            map.getSource(sourceId)
+        ) {
+
+            map.removeSource(
+                sourceId
+            );
+
+        }
+    }
+}
+
+
+/* =========================================================
+   DRAW ROUTES
+========================================================= */
+
+async function drawRoutes() {
+
+    if (
+        !map.isStyleLoaded()
+    ) {
+        return;
+    }
+
+    clearRouteLayers();
+
+    /*
+       Road-route alternatives first.
+
+       Selected route is drawn LAST so it always
+       sits visually above the alternatives.
+    */
+
+    const order = [];
+
+    for (
+        let i = 0;
+        i < routes.length;
+        i++
+    ) {
+
+        if (
+            i !== selectedRouteIndex
+        ) {
+
+            order.push(i);
+
+        }
+
+    }
+
+    order.push(
+        selectedRouteIndex
+    );
+
+
+    for (const index of order) {
+
+        const route =
+            routes[index];
+
+        if (!route) {
+            continue;
+        }
+
+        let geometry =
+            route._roadGeometry;
+
+        if (!geometry) {
+
+            geometry =
+                await getRoadGeometry(
+                    route
+                );
+
+            route._roadGeometry =
+                geometry;
+        }
+
+        if (
+            !geometry ||
+            geometry.length < 2
+        ) {
+            continue;
+        }
+
+        const sourceId =
+            `route-source-${index}`;
+
+        const lineId =
+            `route-line-${index}`;
+
+        const selected =
+            index ===
+            selectedRouteIndex;
+
+        map.addSource(
+            sourceId,
+            {
+                type: "geojson",
+
+                data: {
+
+                    type: "Feature",
+
+                    geometry: {
+
+                        type: "LineString",
+
+                        coordinates:
+                            geometry
+
+                    },
+
+                    properties: {}
+                }
+            }
+        );
+
+        /*
+           No casing layer.
+
+           This is the important fix.
+
+           Google-style route = one clean line,
+           not black + white + blue stacked together.
+        */
+
+        map.addLayer({
+
+            id: lineId,
+
+            type: "line",
+
+            source: sourceId,
+
+            layout: {
+
+                "line-cap":
+                    "round",
+
+                "line-join":
+                    "round"
+            },
+
+            paint: {
+
+                "line-color":
+                    selected
+                        ? "#1A73E8"
+                        : "#8A9097",
+
+                /*
+                   Zoom-dependent width.
+
+                   The route gets thinner as the map
+                   gets closer so it never becomes a
+                   giant tube.
+                */
+
+                "line-width": [
+
+                    "interpolate",
+
+                    ["linear"],
+
+                    ["zoom"],
+
+                    9, selected ? 5.2 : 3.2,
+
+                    10, selected ? 5.0 : 3.0,
+
+                    11, selected ? 4.7 : 2.9,
+
+                    12, selected ? 4.4 : 2.8,
+
+                    13, selected ? 4.1 : 2.7,
+
+                    14, selected ? 3.8 : 2.6,
+
+                    15, selected ? 3.5 : 2.5,
+
+                    16, selected ? 3.2 : 2.4,
+
+                    17, selected ? 3.0 : 2.3
+                ],
+
+                "line-opacity":
+                    selected
+                        ? 0.98
+                        : 0.48,
+
+                "line-blur":
+                    0,
+
+                "line-color-transition": {
+                    duration: 500,
+                    delay: 0
+                },
+
+                "line-opacity-transition": {
+                    duration: 500,
+                    delay: 0
+                },
+
+                "line-width-transition": {
+                    duration: 500,
+                    delay: 0
+                }
+            }
+        });
+
+    }
+
+}
+
+
+/* =========================================================
+   MARKERS
+========================================================= */
+
+function removeMarkers() {
+
+    document
+        .querySelectorAll(
+            ".transit-marker"
+        )
+        .forEach(
+            el => el.remove()
+        );
+
+}
+
+
+function createMarker(
+    lng,
+    lat,
+    type
+) {
+
+    const element =
+        document.createElement(
+            "div"
+        );
+
+    element.className =
+        "transit-marker";
+
+    const inner =
+        document.createElement(
+            "div"
+        );
+
+    inner.className =
+        "stop-marker";
+
+    inner.innerHTML =
+        '<div class="stop-marker-inner"></div>';
+
+    if (
+        type === "destination"
+    ) {
+
+        inner.querySelector(
+            ".stop-marker-inner"
+        ).style.background =
+            "#4285F4";
+
+    }
+
+    element.appendChild(
+        inner
+    );
+
+    new maplibregl.Marker({
+        element,
+        anchor: "bottom"
+    })
+    .setLngLat([
+        lng,
+        lat
+    ])
+    .addTo(map);
+
+}
+
+
+function drawMarkers() {
+
+    removeMarkers();
+
+    if (
+        originStop
+    ) {
+
+        createMarker(
+            Number(
+                originStop.stop_lon
+            ),
+            Number(
+                originStop.stop_lat
+            ),
+            "origin"
+        );
+
+    }
+
+    if (
+        destinationStop
+    ) {
+
+        createMarker(
+            Number(
+                destinationStop.stop_lon
+            ),
+            Number(
+                destinationStop.stop_lat
+            ),
+            "destination"
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   MAP FIT
+========================================================= */
+
+function fitSelectedRoute() {
+
+    const route =
+        routes[
+            selectedRouteIndex
+        ];
+
+    if (!route) {
+        return;
+    }
+
+    const geometry =
+        route._roadGeometry ||
+        getCoordinates(route);
+
+    if (
+        !geometry ||
+        geometry.length < 2
+    ) {
+        return;
+    }
+
+    const bounds =
+        new maplibregl.LngLatBounds();
+
+    geometry.forEach(
+        point =>
+            bounds.extend(point)
+    );
+
+    map.fitBounds(
+        bounds,
+        {
+
+            padding: {
+
+                top: 80,
+
+                right: 70,
+
+                bottom: 80,
+
+                left: 370
+
+            },
+
+            /*
+               Don't zoom into one tiny road section.
+            */
+
+            maxZoom: 12.2,
+
+            duration: 850,
+
+            essential: true,
+
+            easing:
+                t =>
+                    1 -
+                    Math.pow(
+                        1 - t,
+                        3
+                    )
+        }
+    );
+
+}
+
+
+/* =========================================================
+   SELECT ROUTE
+========================================================= */
+
+async function selectRoute(
+    index,
+    moveCamera = true
+) {
+
+    if (
+        !routes[index]
+    ) {
+        return;
+    }
+
+    selectedRouteIndex =
+        index;
+
+    /*
+       Update cards immediately.
+    */
+
+    document
+        .querySelectorAll(
+            ".route-card"
+        )
+        .forEach(
+            (card, i) => {
+
+                const selected =
+                    i === index;
+
+                card.classList.toggle(
+                    "selected",
+                    selected
+                );
+
+            }
+        );
+
+    /*
+       Smoothly switch line styling.
+
+       No redraw needed if the geometry already exists.
+    */
+
+    routes.forEach(
+        (route, i) => {
+
+            const lineId =
+                `route-line-${i}`;
+
+            if (
+                !map.getLayer(
+                    lineId
+                )
+            ) {
+                return;
+            }
+
+            const selected =
+                i === index;
+
+            map.setPaintProperty(
+                lineId,
+                "line-color",
+                selected
+                    ? "#1A73E8"
+                    : "#8A9097"
+            );
+
+            map.setPaintProperty(
+                lineId,
+                "line-opacity",
+                selected
+                    ? 0.98
+                    : 0.48
+            );
+
+            map.setPaintProperty(
+                lineId,
+                "line-width",
+                [
+
+                    "interpolate",
+
+                    ["linear"],
+
+                    ["zoom"],
+
+                    9,
+                    selected ? 5.2 : 3.2,
+
+                    10,
+                    selected ? 5.0 : 3.0,
+
+                    11,
+                    selected ? 4.7 : 2.9,
+
+                    12,
+                    selected ? 4.4 : 2.8,
+
+                    13,
+                    selected ? 4.1 : 2.7,
+
+                    14,
+                    selected ? 3.8 : 2.6,
+
+                    15,
+                    selected ? 3.5 : 2.5,
+
+                    16,
+                    selected ? 3.2 : 2.4,
+
+                    17,
+                    selected ? 3.0 : 2.3
+                ]
+            );
+
+        }
+    );
+
+    /*
+       Move selected route to the top of the layer stack.
+    */
+
+    const selectedLayer =
+        `route-line-${index}`;
+
+    if (
+        map.getLayer(
+            selectedLayer
+        )
+    ) {
+
+        map.moveLayer(
+            selectedLayer
+        );
+
+    }
+
+    /*
+       Load road geometry if it hasn't been
+       generated yet.
+    */
+
+    if (
+        !routes[index]._roadGeometry
+    ) {
+
+        routes[index]._roadGeometry =
+            await getRoadGeometry(
+                routes[index]
+            );
+
+        /*
+           Redraw once with the proper geometry.
+        */
+
+        await drawRoutes();
+
+    }
+
+    if (
+        moveCamera
+    ) {
+
+        fitSelectedRoute();
+
+    }
+
+}
+
+
+/* =========================================================
+   RENDER CARDS
+========================================================= */
+
+function renderRoutes() {
+
+    const container =
+        document.getElementById(
+            "routes"
+        );
+
+    container.innerHTML = "";
+
+    routes.forEach(
+        (route, index) => {
+
+            const card =
+                document.createElement(
+                    "div"
+                );
+
+            card.className =
+                "route-card" +
+                (
+                    index ===
+                    selectedRouteIndex
+                        ? " selected"
+                        : ""
+                );
+
+            const routeName =
+                route.route_name ||
+                (
+                    route.route_numbers &&
+                    route.route_numbers.length
+                        ? route.route_numbers.join(" → ")
+                        : "Transit route"
+                );
+
+            const duration =
+                route.total_minutes ??
+                "-";
+
+            const transfers =
+                route.transfers ??
+                0;
+
+            const departure =
+                route.departure_time ||
+                "--:--";
+
+            const arrival =
+                route.arrival_time ||
+                "--:--";
+
+            card.innerHTML = `
+
+                ${
+                    index === 0
+                        ? '<div class="best">BEST</div>'
+                        : ''
+                }
+
+                <div class="route-name">
+                    ${escapeHtml(routeName)}
+                </div>
+
+                <div class="route-info">
+                    ${duration} min
+                    &nbsp;•&nbsp;
+                    ${transfers} transfer${transfers === 1 ? "" : "s"}
+                </div>
+
+                <div class="route-time">
+                    ${escapeHtml(departure)}
+                    →
+                    ${escapeHtml(arrival)}
+                </div>
+            `;
+
+            card.addEventListener(
+                "click",
+                () =>
+                    selectRoute(
+                        index,
+                        true
+                    )
+            );
+
+            container.appendChild(
+                card
+            );
+
+        }
+    );
+
+}
+
+
+/* =========================================================
+   HTML ESCAPE
+========================================================= */
+
+function escapeHtml(value) {
+
+    return String(value)
+        .replace(
+            /&/g,
+            "&amp;"
+        )
+        .replace(
+            /</g,
+            "&lt;"
+        )
+        .replace(
+            />/g,
+            "&gt;"
+        )
+        .replace(
+            /"/g,
+            "&quot;"
+        )
+        .replace(
+            /'/g,
+            "&#039;"
+        );
+
+}
+
+
+/* =========================================================
+   FIND ROUTES
+========================================================= */
+
+async function findRoutes() {
+
+    const button =
+        document.getElementById(
+            "findButton"
+        );
+
+    const status =
+        document.getElementById(
+            "status"
+        );
+
+    const from =
+        document.getElementById(
+            "fromInput"
+        ).value.trim();
+
+    const to =
+        document.getElementById(
+            "toInput"
+        ).value.trim();
+
+    if (
+        !from ||
+        !to
+    ) {
+
+        status.textContent =
+            "Enter both locations.";
+
+        return;
+    }
+
+    button.classList.add(
+        "loading"
+    );
+
+    button.textContent =
+        "FINDING ROUTES...";
+
+    status.textContent =
+        "Finding transit routes...";
+
+    try {
+
+        originStop =
+            await findStop(from);
+
+        destinationStop =
+            await findStop(to);
+
+        status.textContent =
+            "Calculating routes...";
+
+        const response =
+            await fetch(
+                "/api/plan",
+                {
+
+                    method:
+                        "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body:
+                        JSON.stringify({
+
+                            origin_stop_id:
+                                String(
+                                    originStop.stop_id
+                                ),
+
+                            destination_stop_id:
+                                String(
+                                    destinationStop.stop_id
+                                ),
+
+                            profile: {
+
+                                preference:
+                                    "fastest",
+
+                                /*
+                                   Keep the verified
+                                   schedule used by
+                                   the current demo.
+                                */
+
+                                departure_time_override:
+                                    "05:00:00"
+                            }
+
+                        })
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+
+            throw new Error(
+                "Planner returned HTTP " +
+                response.status
+            );
+
+        }
+
+        const data =
+            await response.json();
+
+        const found =
+            Array.isArray(
+                data.routes
+            )
+                ? data.routes
+                : [];
+
+        if (!found.length) {
+
+            throw new Error(
+                "No journey found."
+            );
+
+        }
+
+        /*
+           Remove duplicate route cards.
+        */
+
+        routes =
+            deduplicateRoutes(
+                found
+            )
+            .sort(
+                (a, b) => {
+
+                    const timeA =
+                        Number(
+                            a.total_minutes ??
+                            9999
+                        );
+
+                    const timeB =
+                        Number(
+                            b.total_minutes ??
+                            9999
+                        );
+
+                    if (
+                        timeA !==
+                        timeB
+                    ) {
+
+                        return (
+                            timeA -
+                            timeB
+                        );
+
+                    }
+
+                    return (
+                        Number(
+                            a.transfers ??
+                            99
+                        ) -
+                        Number(
+                            b.transfers ??
+                            99
+                        )
+                    );
+
+                }
+            )
+            .slice(
+                0,
+                6
+            );
+
+        selectedRouteIndex =
+            0;
+
+        renderRoutes();
+
+        status.textContent =
+            `${routes.length} route${routes.length === 1 ? "" : "s"} found`;
+
+        /*
+           Draw alternatives first.
+
+           Road geometry is generated sequentially so
+           the OSRM service isn't hammered.
+        */
+
+        clearRouteLayers();
+
+        for (
+            let i = 0;
+            i < routes.length;
+            i++
+        ) {
+
+            status.textContent =
+                `Mapping route ${i + 1} of ${routes.length}...`;
+
+            routes[i]._roadGeometry =
+                await getRoadGeometry(
+                    routes[i]
+                );
+
+            /*
+               Draw after each geometry arrives.
+               This produces a smooth progressive
+               mapping effect.
+            */
+
+            await drawRoutes();
+
+        }
+
+        drawMarkers();
+
+        /*
+           Fit the complete selected route.
+        */
+
+        fitSelectedRoute();
+
+        status.textContent =
+            `Selected ${routes[0].route_name || "best route"}`;
+
+    } catch (error) {
+
+        console.error(
+            error
+        );
+
+        status.textContent =
+            error.message ||
+            "Unable to find journey.";
+
+    } finally {
+
+        button.classList.remove(
+            "loading"
+        );
+
+        button.textContent =
+            "FIND ROUTES";
+
+    }
+
+}
+
+
+/* =========================================================
+   BUTTON
+========================================================= */
+
+document
+    .getElementById(
+        "findButton"
+    )
+    .addEventListener(
+        "click",
+        findRoutes
+    );
+
+
+/* =========================================================
+   INITIAL MAP
+========================================================= */
+
+map.on(
+    "load",
+    () => {
+
+        /*
+           Nothing is drawn until the user presses
+           Find Routes.
+        */
+
+    }
+);
+
+</script>
+
+</body>
+</html>

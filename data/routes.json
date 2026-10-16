@@ -1,0 +1,41 @@
+{
+  "notice": "Demo routes only. Replace these values with verified route and stop data before final evaluation.",
+  "routes": [
+    {
+      "id": "R101",
+      "origin": "University Campus",
+      "destination": "City Railway Station",
+      "buses": ["101A"],
+      "stops": ["University Campus", "Central Market", "City Railway Station"],
+      "total_minutes": 42,
+      "walking_minutes": 6,
+      "transfers": 0,
+      "reliability": 88,
+      "delay_risk": 22
+    },
+    {
+      "id": "R102",
+      "origin": "University Campus",
+      "destination": "City Railway Station",
+      "buses": ["16B", "44C"],
+      "stops": ["University Campus", "Town Hall", "Metro Junction", "City Railway Station"],
+      "total_minutes": 34,
+      "walking_minutes": 13,
+      "transfers": 1,
+      "reliability": 70,
+      "delay_risk": 42
+    },
+    {
+      "id": "R103",
+      "origin": "University Campus",
+      "destination": "City Railway Station",
+      "buses": ["101D"],
+      "stops": ["University Campus", "Lake Road", "City Railway Station"],
+      "total_minutes": 48,
+      "walking_minutes": 3,
+      "transfers": 0,
+      "reliability": 83,
+      "delay_risk": 28
+    }
+  ]
+}

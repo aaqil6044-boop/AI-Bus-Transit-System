@@ -1,0 +1,39 @@
+# Local secrets (Gemini API key). Never commit or upload this file.
+.env
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# JavaScript and generated build caches
+node_modules/
+.build/
+.codex-finalizer/
+
+# Runtime logs and local feedback
+*.log
+data/feedback.jsonl
+
+# Generated/downloaded transit data (kept locally, not stored in GitHub)
+data/*.db
+data/*.zip
+data/bmtc-gtfs-main/
+otp/*.pbf
+otp/*.obj
+otp/*.jar
+otp/tools/
+
+# Temporary work and generated outputs
+work/
+output/
+outputs/
+
+# Local historical copies
+*.backup
+*.backup-*
+*.before-*
+*.broken-routing-package
+*.leaflet-backup
+*.BACKUP_*

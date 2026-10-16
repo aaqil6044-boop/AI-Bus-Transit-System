@@ -1,0 +1,14 @@
+{
+  "transitFeeds": [
+    {
+      "type": "gtfs",
+      "source": "../data/bmtc_gtfs.zip",
+      "feedId": "BMTC"
+    }
+  ],
+  "osm": [
+    {
+      "source": "bengaluru.osm.pbf"
+    }
+  ]
+}
