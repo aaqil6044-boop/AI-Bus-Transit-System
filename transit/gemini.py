@@ -54,24 +54,24 @@ Every message must become exactly ONE function call:
   if places are missing, reply asking for the start and destination).
 """
 
+# Kept deliberately plain (no empty enum values, no parameter-less object schemas, few "required"
+# fields): the API rejects some schema shapes outright. The app validates every value itself anyway.
 TOOLS = [{"functionDeclarations": [
     {"name": "plan_journey",
      "description": "Plan or update a bus journey in Bengaluru.",
      "parameters": {"type": "object", "properties": {
-         "origin": {"type": "string", "description": "Start place or BMTC stop name, or empty to keep the selected start."},
-         "destination": {"type": "string", "description": "Destination place or BMTC stop name, or empty to keep the selected one."},
-         "preference": {"type": "string", "enum": ["", "fastest", "less_walking", "fewer_transfers"]},
-         "depart_at": {"type": "string", "description": "24-hour HH:MM departure time, or empty for now."}},
-         "required": ["origin", "destination", "preference", "depart_at"]}},
+         "origin": {"type": "string", "description": "Start place or BMTC stop name. Omit to keep the selected start."},
+         "destination": {"type": "string", "description": "Destination place or BMTC stop name. Omit to keep the selected one."},
+         "preference": {"type": "string", "description": "Only if asked for: fastest, less_walking or fewer_transfers."},
+         "depart_at": {"type": "string", "description": "24-hour HH:MM departure time, only if a time was asked for."}}}},
     {"name": "swap_trip",
-     "description": "Reverse the currently selected start and destination.",
-     "parameters": {"type": "object", "properties": {}}},
+     "description": "Reverse the currently selected start and destination (return trip)."},
     {"name": "reply",
      "description": "Reply in words when no journey needs planning.",
      "parameters": {"type": "object", "properties": {
          "text": {"type": "string", "description": "One to three short sentences."},
-         "kind": {"type": "string", "enum": ["help", "question", "unclear", "smalltalk"]}},
-         "required": ["text", "kind"]}},
+         "kind": {"type": "string", "description": "One of: help, question, unclear, smalltalk."}},
+         "required": ["text"]}},
 ]}]
 
 
@@ -87,6 +87,7 @@ class GeminiUnavailable(Exception):
         "network": "Gemini could not be reached, so the built-in helper answered.",
         "blocked": "Gemini declined that message, so the built-in helper answered.",
         "bad_response": "Gemini gave an unusable answer, so the built-in helper answered.",
+        "bad_request": "Gemini rejected the request (the reason is printed in the app window), so the built-in helper answered.",
     }
 
     def __init__(self, reason: str):
@@ -125,6 +126,21 @@ def _post(url: str, body: dict, key: str, timeout: float):
         except (ValueError, OSError):
             detail = {}
         return error.code, detail
+
+
+def _log(message: str, key: str = "") -> None:
+    """One diagnostic line in the app window. The key is scrubbed even if an error echoes it."""
+    text = str(message)
+    if key:
+        text = text.replace(key, "***")
+    print(f"[Gemini] {text[:400]}", flush=True)
+
+
+def _error_text(data) -> str:
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        return f"{error.get('status', '')} {error.get('message', '')}".strip()
+    return ""
 
 
 def _clean_text(value, limit: int) -> str:
@@ -223,18 +239,42 @@ def understand(message: str, *, transport=None, timeout: float = TIMEOUT_SECONDS
         status_code, data = (transport or _post)(url, body, config["key"], timeout)
     except (TimeoutError, OSError, URLError) as error:
         reason = "timeout" if "timed out" in str(error).lower() or isinstance(error, TimeoutError) else "network"
+        _log(f"{reason}: {type(error).__name__}: {error}", config["key"])
         raise GeminiUnavailable(reason) from None
     except ValueError:
         raise GeminiUnavailable("bad_response") from None
+    if status_code == 400 and "API_KEY" not in json.dumps(data) and "toolConfig" in body:
+        # Some models reject the forced function-call setting; retry once with the plain request.
+        _log(f"HTTP 400 from model {config['model']}: {_error_text(data) or 'no error message'} (retrying without toolConfig)",
+             config["key"])
+        body = {name: value for name, value in body.items() if name != "toolConfig"}
+        try:
+            status_code, data = (transport or _post)(url, body, config["key"], timeout)
+        except (TimeoutError, OSError, URLError, ValueError) as error:
+            _log(f"retry failed: {type(error).__name__}: {error}", config["key"])
+            raise GeminiUnavailable("network") from None
+    if status_code != 200:
+        _log(f"HTTP {status_code} from model {config['model']}: {_error_text(data) or 'no error message'}", config["key"])
     if status_code == 429:
         raise GeminiUnavailable("rate_limited")
     if status_code in (401, 403) or (status_code == 400 and "API_KEY" in json.dumps(data)):
         raise GeminiUnavailable("bad_key")
     if status_code == 404:
         raise GeminiUnavailable("bad_model")
+    if status_code == 400:
+        raise GeminiUnavailable("bad_request")
     if status_code != 200 or not isinstance(data, dict):
         raise GeminiUnavailable("network" if status_code >= 500 else "bad_response")
-    return parse_response(data)
+    try:
+        return parse_response(data)
+    except GeminiUnavailable as error:
+        # Describe the shape of what came back (not the traveller's text) so a format change is visible.
+        candidate = (data.get("candidates") or [{}])[0] if isinstance(data.get("candidates"), list) else {}
+        parts = (candidate.get("content") or {}).get("parts") or [] if isinstance(candidate, dict) else []
+        _log(f"unusable answer ({error.reason}): finishReason={candidate.get('finishReason') if isinstance(candidate, dict) else None}, "
+             f"parts={[sorted(part.keys()) for part in parts if isinstance(part, dict)]}, "
+             f"blockReason={(data.get('promptFeedback') or {}).get('blockReason')}", config["key"])
+        raise
 
 
 def load_dotenv(path) -> None:

@@ -129,6 +129,8 @@ class GeminiAssistantTests(unittest.TestCase):
         cases = [(FakeGemini(status=429, data={}), "quota"),
                  (FakeGemini(status=400, data={"error": {"details": [{"reason": "API_KEY_INVALID"}]}}), "API key"),
                  (FakeGemini(status=404, data={}), "GEMINI_MODEL"),
+                 (FakeGemini(status=400, data={"error": {"status": "INVALID_ARGUMENT", "message": "bad schema"}}),
+                  "rejected the request"),
                  (FakeGemini(status=503, data={}), "could not be reached"),
                  (FakeGemini(error=TimeoutError("timed out")), "in time"),
                  (FakeGemini(data={"candidates": [{"content": {"parts": [{"text": "Take bus 500D!"}]}}]}), "unusable"),
@@ -140,6 +142,45 @@ class GeminiAssistantTests(unittest.TestCase):
                 self.assertIn(words, result["notice"])
                 self.assertEqual(result["intent"], "plan", "the built-in helper still plans the trip")
                 self.assertNotIn("500D", result["reply"], "free text from Gemini is never passed off as a route")
+
+    def test_problems_are_explained_in_the_app_window_without_the_key(self):
+        import contextlib, io
+        out = io.StringIO()
+        fake = FakeGemini(status=400, data={"error": {"status": "INVALID_ARGUMENT",
+                                                      "message": "properties: should be non-empty (key test-key-123)"}})
+        with contextlib.redirect_stdout(out):
+            self.ask("from White Field Post Office to Hoodi", fake)
+            self.ask("from White Field Post Office to Hoodi",
+                     FakeGemini(data={"candidates": [{"content": {"parts": [{"text": "hello"}]}, "finishReason": "STOP"}]}))
+        printed = out.getvalue()
+        self.assertIn("HTTP 400", printed)
+        self.assertIn("should be non-empty", printed)
+        self.assertIn("parts=[['text']]", printed, "the shape of an unusable answer is described")
+        self.assertNotIn("test-key-123", printed)
+        self.assertNotIn("hello", printed, "the model's or traveller's text is not printed")
+
+    def test_a_rejected_request_is_retried_once_without_tool_config(self):
+        answers = [(400, {"error": {"status": "INVALID_ARGUMENT", "message": "allowedFunctionNames unsupported"}}),
+                   (200, call("plan_journey", origin="White Field Post Office", destination="Hoodi"))]
+        sent = []
+        def fake(url, body, key, timeout):
+            sent.append(body)
+            return answers[len(sent) - 1]
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            result, planner = self.ask("whitefield to hoodi", fake)
+        self.assertEqual(len(sent), 2)
+        self.assertIn("toolConfig", sent[0])
+        self.assertNotIn("toolConfig", sent[1])
+        self.assertEqual((result["engine"], result["intent"]), ("gemini", "plan"))
+
+    def test_request_schema_avoids_shapes_the_api_rejects(self):
+        for function in gemini.TOOLS[0]["functionDeclarations"]:
+            parameters = function.get("parameters")
+            if parameters is not None:
+                self.assertTrue(parameters.get("properties"), f"{function['name']}: object schema without properties")
+            for prop in (parameters or {}).get("properties", {}).values():
+                self.assertNotIn("", prop.get("enum", []), f"{function['name']}: empty enum value")
 
     def test_without_a_key_gemini_is_never_called(self):
         fake = FakeGemini(data=call("reply", text="hi", kind="smalltalk"))
