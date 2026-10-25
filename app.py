@@ -7,6 +7,7 @@ Then open: http://127.0.0.1:8765
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -333,13 +334,18 @@ class TransitHandler(SimpleHTTPRequestHandler):
 def main():
     # A local .env file (never shared) can hold GEMINI_API_KEY; real environment variables win.
     gemini.load_dotenv(ROOT / ".env")
-    # Port 8000 is blocked by this Windows environment. Keep the service
-    # private to the computer and use the verified local port instead.
+    host = os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1"
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", 8765), TransitHandler)
+        port = int(os.getenv("PORT", "8765"))
+    except ValueError:
+        raise SystemExit("PORT must be a number between 1 and 65535.") from None
+    if not 1 <= port <= 65535:
+        raise SystemExit("PORT must be a number between 1 and 65535.")
+    try:
+        server = ThreadingHTTPServer((host, port), TransitHandler)
     except OSError as error:
-        raise SystemExit(f"Port 8765 is already in use ({error}). Close the other copy of the app, then try again.")
-    print("Adaptive Transit Assistant running at http://127.0.0.1:8765")
+        raise SystemExit(f"Cannot listen on {host}:{port} ({error}). Close the other copy of the app, then try again.")
+    print(f"Adaptive Transit Assistant running at http://{host}:{port}")
     ai = gemini.status()
     print(f"Chat assistant: Gemini ({ai['model']})" if ai["engine"] == "gemini"
           else "Chat assistant: built-in helper (set GEMINI_API_KEY in .env to use Gemini)")

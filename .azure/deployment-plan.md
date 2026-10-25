@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-> **Status:** Planning — awaiting user approval
+> **Status:** Validated
 
 Generated: 2026-10-25 (Asia/Calcutta)
 
@@ -94,7 +94,25 @@ No additional Azure resource will be provisioned. Successful creation of the exi
 | Public IP | 0 | 1 existing | Within limit |
 | VNet, NIC and NSG | 0 | 1 each existing | Within limit |
 
-## 7. Security and Cost Controls
+## 7. Validation Proof
+
+Validated: 2026-10-25 (Asia/Calcutta)
+
+| Check | Result |
+|-------|--------|
+| `python -m unittest discover -s tests -p "test_*.py"` | PASS — 93 tests |
+| Frontend syntax and four Node regression suites | PASS |
+| `python -m py_compile` for `app.py` and `transit/*.py` | PASS |
+| VM-side `bash -n` for bootstrap and verification scripts | PASS |
+| PowerShell parser for `upload-runtime.ps1` | PASS |
+| Credential scan of deployment files | PASS — no keys present |
+| SSH authentication to `azureuser@20.204.43.17` | PASS |
+| VM capacity check | PASS — approximately 27 GB free and 7 GB memory available |
+| Runtime assets | PASS — database, OTP graph and OTP JAR present locally |
+| Static RBAC review | Not applicable — no managed identities or Azure data-plane services |
+| Infrastructure template/policy validation | Not applicable — approved target is an existing VM; no Azure resources are provisioned |
+
+## 8. Security and Cost Controls
 
 - Keep SSH-key authentication; never copy the private key into Git or the VM.
 - Run OTP and Python on loopback only; expose only the reverse proxy.
@@ -105,7 +123,7 @@ No additional Azure resource will be provisioned. Successful creation of the exi
 - Delete the resource group only after explicit user confirmation.
 - Do not publicly distribute BMTC/OTP generated runtime data without confirming redistribution rights.
 
-## 8. Execution Checklist
+## 9. Execution Checklist
 
 ### Preparation
 
@@ -114,15 +132,15 @@ No additional Azure resource will be provisioned. Successful creation of the exi
 - [x] Confirm subscription, region and existing VM from Azure screenshots.
 - [x] Select existing-VM bootstrap recipe.
 - [x] Confirm no additional Azure quota is needed.
-- [ ] Receive user approval for this plan.
+- [x] Receive user approval for this plan.
 
 ### Implementation after approval
 
-- [ ] Review and test all current uncommitted application changes.
-- [ ] Make host/port environment-configurable without changing local defaults.
-- [ ] Add Linux bootstrap, service, reverse-proxy and verification files.
-- [ ] Add Azure start/stop/deletion instructions to the README.
-- [ ] Run all Python and frontend tests.
+- [x] Review and test all current uncommitted application changes.
+- [x] Make host/port environment-configurable without changing local defaults.
+- [x] Add Linux bootstrap, service, reverse-proxy and verification files.
+- [x] Add Azure start/stop/deletion instructions to the README.
+- [x] Run all Python and frontend tests.
 - [ ] Commit and push the tested deployment package.
 - [ ] Copy runtime assets and verify SHA-256 checksums.
 - [ ] Install Java 21, Python, Git and reverse proxy.
@@ -131,7 +149,7 @@ No additional Azure resource will be provisioned. Successful creation of the exi
 
 ### Validation
 
-- [ ] Mark plan `Ready for Validation` and run Azure validation.
+- [x] Run Azure validation and record proof.
 - [ ] Confirm OTP GraphQL health on `127.0.0.1:8766`.
 - [ ] Confirm `/api/health`, stop search, planning and static assets.
 - [ ] Confirm external access, Gemini fallback/configuration and BMTC graceful failure.
@@ -144,7 +162,7 @@ No additional Azure resource will be provisioned. Successful creation of the exi
 - Keep SSH available until external checks pass.
 - Resource-group deletion always requires explicit confirmation.
 
-## 9. Files to Generate After Approval
+## 10. Deployment Files
 
 | File | Purpose |
 |------|---------|
@@ -157,6 +175,6 @@ No additional Azure resource will be provisioned. Successful creation of the exi
 | `deploy/azure/upload-runtime.ps1` | Windows-to-VM runtime-file transfer |
 | `README.md` | Deployment and cost-control instructions |
 
-## 10. Current Next Step
+## 11. Current Next Step
 
-Obtain user approval. No installation or public-port change occurs before approval.
+Commit and push the validated deployment package, then install it on the approved VM.

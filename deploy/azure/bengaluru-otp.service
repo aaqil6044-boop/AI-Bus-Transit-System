@@ -1,0 +1,18 @@
+[Unit]
+Description=Bengaluru Transit OpenTripPlanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azureuser
+Group=azureuser
+WorkingDirectory=/opt/bengaluru-transit/otp
+ExecStart=/usr/bin/java -Xms1G -Xmx4G -jar /opt/bengaluru-transit/otp/otp-shaded-2.8.1.jar --load --port 8766 --bindAddress 127.0.0.1 /opt/bengaluru-transit/otp
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

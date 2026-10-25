@@ -1,0 +1,22 @@
+[Unit]
+Description=Bengaluru Transit web application
+After=network-online.target bengaluru-otp.service
+Wants=network-online.target bengaluru-otp.service
+
+[Service]
+Type=simple
+User=azureuser
+Group=azureuser
+WorkingDirectory=/opt/bengaluru-transit
+Environment=PYTHONUNBUFFERED=1
+Environment=APP_HOST=127.0.0.1
+Environment=PORT=8765
+Environment=OTP_ENDPOINT=http://127.0.0.1:8766/otp/gtfs/v1
+EnvironmentFile=-/etc/bengaluru-transit.env
+ExecStart=/usr/bin/python3 /opt/bengaluru-transit/app.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

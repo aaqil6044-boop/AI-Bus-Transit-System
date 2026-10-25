@@ -159,6 +159,43 @@ A deployment should provide:
 
 Because the runtime artifacts are not committed, they can be distributed as versioned GitHub Release assets or downloaded from private object storage during deployment. Do not rebuild the graph on every application start.
 
+### Azure Ubuntu VM
+
+This repository includes an existing-VM deployment package in `deploy/azure/`. It runs OTP and the
+Python server privately on ports 8766 and 8765, with Nginx as the public entry point on port 80.
+
+1. Clone the repository to `/opt/bengaluru-transit` on the VM.
+2. From Windows, upload the ignored runtime files:
+
+   ```powershell
+   .\deploy\azure\upload-runtime.ps1 -VmIp <PUBLIC_IP> -KeyPath <PATH_TO_PEM>
+   ```
+
+3. On the VM, run:
+
+   ```bash
+   cd /opt/bengaluru-transit
+   chmod +x deploy/azure/bootstrap.sh deploy/azure/verify.sh
+   ./deploy/azure/bootstrap.sh
+   ```
+
+4. Put an optional Gemini key in `/etc/bengaluru-transit.env` using `sudo`; never commit it.
+5. Allow inbound TCP port 80 in the VM network security group. Use HTTPS before relying on browser
+   location outside localhost.
+
+Useful checks:
+
+```bash
+sudo systemctl status bengaluru-otp bengaluru-app nginx
+sudo journalctl -u bengaluru-otp -u bengaluru-app -n 100 --no-pager
+/opt/bengaluru-transit/deploy/azure/verify.sh
+```
+
+To stop compute charges, use **Stop** in Azure Portal and wait for `Stopped (deallocated)`. The OS
+disk and public IP can still have small storage/address charges while the VM is deallocated. Starting
+the VM again restarts all three services automatically. Deleting the resource group removes the VM,
+disk, public IP and network resources; only do that when the deployment is no longer needed.
+
 For a no-credit-card student option, Azure for Students may provide temporary credits. For an always-free VM, Oracle Cloud's eligible Ampere instances may have sufficient resources, subject to regional availability. Verify current limits before creating infrastructure.
 
 ## Important accuracy notes
