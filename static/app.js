@@ -125,13 +125,19 @@
         if (banner) banner.hidden = true;
     }
 
+    const APP_BUILD = "2026-10-25-busroute-1";   // must match BUILD in app.py
+
     async function checkHealth() {
         try {
             const result = await fetchJson("/api/health", { cache: "no-store" }, 6000);
             if (!result.ok || !result.data) throw new Error("Health check failed");
             state.health = result.data;
             showAssistantEngine(result.data.assistant);
-            if (!result.data.database) {
+            if (result.data.build !== APP_BUILD) {
+                // The page updated (browser reload) but the black run-local window still runs old server code.
+                showBanner("This page is newer than the app server that is running. Close the black run-local window, " +
+                    "start run-local.cmd again, then reload this page (Ctrl+F5). Until then some features will not work.");
+            } else if (!result.data.database) {
                 showBanner("The Bengaluru stop database is missing, so searching and planning will not work. " +
                     "Run: python scripts/import_gtfs.py data/bmtc_gtfs.zip, then restart the app.");
             } else if (!result.data.router) {
@@ -250,8 +256,16 @@
             );
 
             state.map.on("zoomend", () => spreadBusMarkers());
+            state.map.on("rotate", () => state.liveBus.markers.forEach(entry => {
+                const element = entry.marker.getElement();
+                if (element?.dataset?.bearing) setMarkerDirection(element, Number(element.dataset.bearing));
+            }));
             // Remember when the traveller pans or zooms by hand, so automatic framing stops fighting them.
-            const handMoved = event => { if (event?.originalEvent) state.liveBus.userMoved = true; };
+            const handMoved = event => {
+                if (!event?.originalEvent) return;   // programmatic camera moves never hide anything
+                state.liveBus.userMoved = true;
+                enterMapFocus();
+            };
             state.map.on("dragstart", handMoved);
             state.map.on("zoomstart", handMoved);
             state.map.on("load", () => {
@@ -437,8 +451,33 @@
 
     // Space the camera should leave around the map so the route is never hidden behind a panel.
     // Panels are measured where they actually are (not where an animation currently has them).
+    // ---- Map focus: when the traveller drags or zooms the map, the panels slide off the edges so the
+    // whole map is visible. "Show trip panels" (or Esc, or any action that needs them) brings them back.
+    function panelsOnScreen() {
+        return !!(routePanel?.classList?.contains("open") || !$("liveBusPanel")?.hidden || !$("journeyGuide")?.hidden ||
+            (window.innerWidth || 1600) > 760);
+    }
+
+    function enterMapFocus() {
+        const body = document.body;
+        if (!body?.classList || body.classList.contains("map-focus") || !panelsOnScreen()) return;
+        body.classList.add("map-focus");
+        const pill = $("showPanelsBtn");
+        if (pill) pill.hidden = false;
+    }
+
+    function exitMapFocus() {
+        const body = document.body;
+        if (!body?.classList?.contains("map-focus")) return;
+        body.classList.remove("map-focus");
+        const pill = $("showPanelsBtn");
+        if (pill) pill.hidden = true;
+    }
+
     function mapPadding() {
         const fallback = { top: 120, right: 80, bottom: 220, left: 430 };
+        // Panels are slid away: the whole map is free.
+        if (document.body?.classList?.contains("map-focus")) return { top: 80, right: 60, bottom: 90, left: 60 };
         try {
             const width = window.innerWidth, height = window.innerHeight;
             if (!width || !height || typeof getComputedStyle !== "function") return fallback;
@@ -1216,6 +1255,7 @@
 
         routeResults.innerHTML = "";
         clearRouteLayers();
+        syncExplainButton();
 
         if (!routes.length) {
             routeResults.appendChild(createFallbackCard(result));
@@ -1395,6 +1435,7 @@
     }
 
     function openChat() {
+        exitMapFocus();
         chatPanel.classList.add("open");
         const input = $("chatInput");
         if (input) input.focus();
@@ -1413,6 +1454,12 @@
             : "Built-in helper · routes from BMTC data";
         label.title = ai ? `Model: ${info.model || "Gemini"}. Places and journeys are still checked against BMTC data.` : "";
         chatPanel?.classList?.toggle("ai-on", ai);
+        syncExplainButton();
+    }
+
+    function syncExplainButton() {
+        const button = $("explainBtn");
+        if (button) button.hidden = !(state.health?.assistant?.engine === "gemini" && normalizeRoutes(state.lastPlan).length > 1);
     }
 
     function addChatMessage(message, role = "assistant") {
@@ -1479,12 +1526,47 @@
         }
     }
 
+    // Visible "thinking" feedback while the assistant works: in the main search box (the chat may be
+    // closed) and as an animated message in the chat. Steps advance on a timer because the server
+    // answers in one go; they describe what it is doing, never a result.
+    function startThinking(pending) {
+        const ai = state.health?.assistant?.engine === "gemini";
+        const steps = [
+            [0, ai ? "Gemini is reading your request" : "Reading your request"],
+            [1500, "Finding the stops and buses"],
+            [6000, "Still working: the route engine can take a few seconds"],
+            [20000, "Taking longer than usual; hang on a little more"]];
+        const box = document.querySelector(".ai-command");
+        const input = $("aiInput");
+        const status = $("aiStatus");
+        const placeholder = input?.placeholder;
+        box?.classList?.add("thinking");
+        if (input) input.placeholder = "Working on your request… (you can type the next one)";
+        const show = (text) => {
+            if (status) { status.hidden = false; status.textContent = `${text}…`; }
+            if (pending) pending.textContent = text;
+        };
+        const timers = steps.map(([delay, text]) => setTimeout(() => show(text), delay));
+        show(steps[0][1]);
+        return () => {
+            timers.forEach(clearTimeout);
+            box?.classList?.remove("thinking");
+            if (input) input.placeholder = placeholder;
+            if (status) { status.hidden = true; status.textContent = ""; }
+        };
+    }
+
     async function runAssistantCommand(text, { fromMainBar = false } = {}) {
         const command = String(text || "").trim();
-        if (!command || state.chatBusy) return;
+        if (!command) return false;
+        if (state.chatBusy) {
+            showStatus("Still working on your last request. Your new one is kept in the box; press Enter again in a moment.", true);
+            return false;
+        }
 
         addChatMessage(command, "user");
-        const pending = addChatMessage("Looking that up…", "assistant pending");
+        const pending = addChatMessage("", "assistant pending thinking");
+        const stopThinking = startThinking(pending);
         state.chatBusy = true;
         $("chatSendBtn")?.setAttribute("disabled", "");
 
@@ -1525,6 +1607,10 @@
             state.chatHistory = [...(state.chatHistory || []), {role: "user", text: command},
                 {role: "assistant", text: String(data.reply || "").slice(0, 300)}].slice(-6);
             if (data.origin || data.destination || data.plan) applyAssistantResult(data);
+            if (data.intent === "live") await liveFromChat(data.route, pending);
+            if (data.intent === "use_location") await startFromMyLocation(pending);
+            // A Gemini-planned journey also gets a short, fact-checked comparison of the options.
+            if (data.plan && data.engine === "gemini" && normalizeRoutes(data.plan).length > 1) explainOptions({quiet: true});
             // A planned journey is the answer: on small screens get the chat out of the way of the routes.
             if (data.plan && (window.innerWidth || 1600) < 1100) {
                 closeChat();
@@ -1537,10 +1623,136 @@
             if (pending) pending.textContent = `${explainFailure(error, "The assistant")} You can also use the From and To boxes.`;
             if (!chatPanel.classList.contains("open")) openChat();
         } finally {
+            stopThinking();
             state.chatBusy = false;
             $("chatSendBtn")?.removeAttribute("disabled");
-            pending?.classList?.remove("pending");
+            pending?.classList?.remove("pending", "thinking");
         }
+        return true;
+    }
+
+    function routeFacts(route) {
+        const firstBus = (route.legs || []).find(leg => leg.transit);
+        return {route_numbers: route.route_numbers, transit: route.transit, departure_time: route.departure_time,
+            arrival_time: route.arrival_time, trip_minutes: route.trip_minutes, leave_in_minutes: route.leave_in_minutes,
+            transfers: route.transfers, walking_minutes: route.walking_minutes, detour: !!route.detour,
+            also_lines: firstBus?.also_served_by || []};
+    }
+
+    // Ask the server for a short Gemini comparison of the options on screen. The server discards any
+    // answer that mentions a time, number or bus that is not in these results.
+    async function explainOptions({quiet = false} = {}) {
+        const routes = normalizeRoutes(state.lastPlan);
+        if (!routes.length) return;
+        const revision = state.journeyRevision;
+        const item = quiet ? null : (openChat(), addChatMessage("Comparing the options…", "assistant pending"));
+        try {
+            const result = await fetchJson("/api/explain", {method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({routes: routes.slice(0, 5).map(routeFacts), preference: state.selectedPreference})}, 20000);
+            if (revision !== state.journeyRevision) { item?.remove(); return; }
+            if (result.data?.ok && result.data.text) {
+                const target = item || addChatMessage("", "assistant");
+                if (!target) return;
+                target.textContent = result.data.text;
+                const tag = document.createElement("small");
+                tag.className = "chat-ai-tag";
+                tag.textContent = "Gemini summary · checked against the options shown";
+                target.appendChild(tag);
+            } else if (item) {
+                item.textContent = result.data?.reason === "ungrounded"
+                    ? "Gemini's summary mentioned something that is not in these results, so I left it out. The option cards show the details."
+                    : "No summary right now (Gemini is unavailable). The option cards show the details.";
+            }
+        } catch (error) {
+            if (item) item.textContent = "No summary right now. The option cards show the details.";
+        } finally {
+            item?.classList?.remove("pending");
+        }
+    }
+
+    // "Where is my bus?" from the chat: run the normal live check and copy its headline into the chat.
+    async function liveFromChat(routeName, item) {
+        const routes = normalizeRoutes(state.lastPlan);
+        const selected = routes[state.selectedRouteIndex] || routes[0] || null;
+        const wanted = String(routeName || "").trim().toUpperCase();
+        const say = (text) => { if (item) item.textContent = text; };
+        if (wanted) {
+            const base = name => String(name || "").trim().toUpperCase().split(" ")[0];
+            const ordered = selected ? [selected, ...routes.filter(r => r !== selected)] : routes;
+            let match = null;
+            for (const route of ordered) {
+                const leg = (route.legs || []).find(l => l.transit && (base(l.route_name) === base(wanted) ||
+                    (l.also_served_by || []).some(n => base(n) === base(wanted))));
+                if (leg) { match = {route, leg}; break; }
+            }
+            if (match) {
+                const lines = [wanted, ...[match.leg.route_name, ...(match.leg.also_served_by || [])]
+                    .filter(n => base(n) !== base(wanted))].slice(0, 1);
+                trackSearchBuses(lines, [match.route], false, placeOf(match.leg.from, "boarding stop"), placeOf(match.leg.to, "alighting stop"), []);
+            } else if (state.origin) {
+                trackSearchBuses([wanted], [], false, placeOf(state.origin, "your start"),
+                    state.destination ? placeOf(state.destination, "your destination") : null, []);
+            } else {
+                say(`Tell me where you are starting (or plan a journey first), so I can check which ${wanted} buses are coming your way.`);
+                return;
+            }
+        } else if (selected) {
+            const scope = routeLiveScope(selected);
+            if (!scope.lines.length) { say("The selected journey has no bus to track."); return; }
+            trackSearchBuses(scope.lines, [selected], false, scope.boardingStop, scope.alightStop, routeAlternates(selected));
+        } else {
+            say("Plan a journey first (for example \"Whitefield to Majestic\"), then ask me where your bus is.");
+            return;
+        }
+        // Wait for the first answer from the live check, then repeat its headline here.
+        const session = state.liveBus.session;
+        for (let waited = 0; waited < 20000; waited += 300) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+            if (session !== state.liveBus.session) return;
+            if (state.liveBus.hasResult || (!state.liveBus.loading && waited > 900)) break;
+        }
+        const headline = $("liveBusStatus")?.textContent || "";
+        const meta = ($("liveBusMeta")?.textContent || "").split(" · ")[0] || "";
+        say(`${headline}${meta && !meta.startsWith("checked") ? `. ${meta.charAt(0).toUpperCase()}${meta.slice(1)}` : ""}. Details and the bus markers are in the live panel.`);
+    }
+
+    // "From here": take one GPS fix in the browser, use it as the start, and plan if a destination is set.
+    // The position goes only to this app's own planner, never to Gemini.
+    function startFromMyLocation(item) {
+        const say = (text) => { if (item) item.textContent = text; };
+        if (!navigator.geolocation) {
+            say("This browser cannot share your location. Type your starting stop instead.");
+            return Promise.resolve();
+        }
+        say("Getting your location…");
+        return new Promise(resolve => navigator.geolocation.getCurrentPosition(async (position) => {
+            const {latitude: lat, longitude: lon} = position.coords;
+            const accuracy = Math.round(position.coords.accuracy || 0);
+            if (!(lat >= 12.65 && lat <= 13.45 && lon >= 77.20 && lon <= 78.00)) {
+                say("Your location is outside the Bengaluru routing area, so it cannot be the start. Type your starting stop instead.");
+                return resolve();
+            }
+            const point = normalizeStop({id: "point-origin", is_map_point: true, name: `My location (±${accuracy} m)`, lat, lon});
+            invalidateJourney();
+            state.origin = point;
+            originInput.value = point.name;
+            updateMarker("origin", point);
+            const rough = accuracy > 300 ? ` Your location is only accurate to about ${accuracy} m; check the marker, or type your stop.` : "";
+            if (!state.destination) {
+                say(`Start set to your location.${rough} Where do you want to go?`);
+                return resolve();
+            }
+            say(`Start set to your location, going to ${state.destination.name}.${rough} Finding buses…`);
+            await planJourney();
+            const count = normalizeRoutes(state.lastPlan).length;
+            say(count ? `From your location to ${state.destination.name}: ${count} option${count === 1 ? "" : "s"} in the panel below (timetable times, not live).${rough}`
+                : `No scheduled journey was found from your location to ${state.destination.name}.${rough}`);
+            resolve();
+        }, (error) => {
+            say(error.code === 1 ? "Location permission was blocked. Allow location for this site, or type your starting stop."
+                : "I could not get your location right now. Type your starting stop instead.");
+            resolve();
+        }, {enableHighAccuracy: true, timeout: 15000, maximumAge: 30000}));
     }
 
     function setupVoice(button, input) {
@@ -1627,6 +1839,49 @@
                 }
             });
         });
+    }
+
+    // Which way a bus is driving: from its position toward the point ~120 m further along its route's
+    // road path (from the server). No path, no direction: a guess would be worse than nothing.
+    function busBearing(bus) {
+        const path = bus?.heading?.path;
+        if (!Array.isArray(path) || path.length < 2) return null;
+        const from = [Number(bus.lon), Number(bus.lat)];
+        if (!from.every(Number.isFinite)) return null;
+        let target = null;
+        for (const point of path.slice(1)) {
+            const candidate = [Number(point[0]), Number(point[1])];
+            if (!candidate.every(Number.isFinite)) continue;
+            target = candidate;
+            if (haversineMeters(from, candidate) >= 120) break;
+        }
+        if (!target || haversineMeters(from, target) < 15) return null;
+        const toRad = Math.PI / 180;
+        const y = Math.sin((target[0] - from[0]) * toRad) * Math.cos(target[1] * toRad);
+        const x = Math.cos(from[1] * toRad) * Math.sin(target[1] * toRad) -
+            Math.sin(from[1] * toRad) * Math.cos(target[1] * toRad) * Math.cos((target[0] - from[0]) * toRad);
+        return (Math.atan2(y, x) / toRad + 360) % 360;
+    }
+
+    function compassWord(bearing) {
+        return ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"][Math.round(bearing / 45) % 8];
+    }
+
+    // Point the arrow on a bus marker; the map can be rotated, so the arrow is relative to the screen.
+    function setMarkerDirection(element, bearing) {
+        try {
+            const arrow = element?.querySelector?.(".bus-dir");
+            if (!arrow) return;
+            if (bearing === null || bearing === undefined) {
+                arrow.hidden = true;
+                if (element.dataset) delete element.dataset.bearing;
+                return;
+            }
+            if (element.dataset) element.dataset.bearing = String(bearing);
+            arrow.hidden = false;
+            const mapBearing = state.map?.getBearing ? state.map.getBearing() : 0;
+            if (arrow.style) arrow.style.transform = `rotate(${Math.round(bearing - mapBearing)}deg)`;
+        } catch (error) { /* a direction arrow is decoration; never break the bus list for it */ }
     }
 
     function haversineMeters(a, b) {
@@ -1832,6 +2087,166 @@
     function clearBusMarkers() {
         state.liveBus.markers.forEach(entry => entry.marker.remove());
         state.liveBus.markers = [];
+        clearBusHeading();
+    }
+
+    // ---- "Where is this bus heading?": a light dashed line through the next stops on its own run.
+    // Stops come from BMTC's stop order for that run; the line joins stops, it is not the road path.
+    const HEADING_SOURCE = "bus-heading";
+    function clearBusHeading() {
+        const live = state.liveBus;
+        const had = !!live.headingBusId;
+        live.headingBusId = null;
+        live.headingEnd?.remove();
+        live.headingEnd = null;
+        live.headingBoard?.remove();
+        live.headingBoard = null;
+        const map = state.map;
+        if (!map?.getLayer) return;
+        ["bus-heading-stops", "bus-heading-arrows", "bus-heading-line", "bus-heading-casing"].forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+        if (map.getSource?.(HEADING_SOURCE)) map.removeSource(HEADING_SOURCE);
+        // Give the planned journey its normal look back.
+        if (had && state.routeEntries?.length) {
+            try { updateRouteStyles(state.selectedRouteIndex); } catch (error) { /* map not ready */ }
+        }
+    }
+
+    function headingData(bus) {
+        const stops = bus.heading?.stops || [];
+        // The server lays the line along the route's own roads (timetable path); else join the stops.
+        const line = (Array.isArray(bus.heading?.path) && bus.heading.path.length > 1 ? bus.heading.path
+            : [[Number(bus.lon), Number(bus.lat)], ...stops.map(stop => [Number(stop.lon), Number(stop.lat)])])
+            .map(point => [Number(point[0]), Number(point[1])]).filter(point => point.every(Number.isFinite));
+        // Dots for the next few stops only; a whole run of dots would bury the map.
+        return {type: "FeatureCollection", features: [
+            {type: "Feature", properties: {kind: "line"}, geometry: {type: "LineString", coordinates: line}},
+            ...directionChevrons(line),
+            ...stops.slice(0, 8).map((stop, index) => ({type: "Feature", properties: {kind: "stop", name: stop.name, order: index + 1},
+                geometry: {type: "Point", coordinates: [Number(stop.lon), Number(stop.lat)]}}))]};
+    }
+
+    // Small ">" marks along the route line pointing the way the bus travels, spaced by distance.
+    function directionChevrons(line) {
+        if (line.length < 2) return [];
+        let total = 0;
+        for (let i = 1; i < line.length; i++) total += haversineMeters(line[i - 1], line[i]);
+        if (total < 150) return [];
+        const spacing = Math.max(300, total / 28);
+        const arm = Math.min(220, Math.max(40, spacing * 0.16));
+        const marks = [];
+        let next = spacing / 2, walked = 0;
+        for (let i = 1; i < line.length && marks.length < 40; i++) {
+            const a = line[i - 1], b = line[i];
+            const length = haversineMeters(a, b);
+            while (length > 0 && walked + length >= next) {
+                const t = (next - walked) / length;
+                const tip = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+                // local metres -> degrees
+                const mLat = 1 / 111320, mLon = 1 / (111320 * Math.cos(tip[1] * Math.PI / 180));
+                const dx = (b[0] - a[0]) / mLon, dy = (b[1] - a[1]) / mLat;
+                const norm = Math.hypot(dx, dy) || 1;
+                const ux = dx / norm, uy = dy / norm;
+                const wing = (side) => [tip[0] + (-ux * arm + side * -uy * arm * 0.75) * mLon, tip[1] + (-uy * arm + side * ux * arm * 0.75) * mLat];
+                marks.push({type: "Feature", properties: {kind: "chevron"},
+                    geometry: {type: "LineString", coordinates: [wing(1), tip, wing(-1)]}});
+                next += spacing;
+            }
+            walked += length;
+        }
+        return marks;
+    }
+
+    // Fade the planned journey while a bus's route is shown, so the two lines cannot be confused.
+    function dimJourneyRoutes() {
+        const map = state.map;
+        (state.routeEntries || []).forEach(entry => {
+            try {
+                map.setPaintProperty(entry.lineId, "line-opacity", 0.18);
+                map.setPaintProperty(entry.glowId, "line-opacity", 0.02);
+            } catch (error) { /* layer gone */ }
+        });
+    }
+
+    // Returns true when a line was drawn.
+    function showBusHeading(bus, {frame = true} = {}) {
+        const live = state.liveBus;
+        const map = state.map;
+        if (!map?.addSource || !state.mapReady) return false;
+        const id = liveBusKey(bus);
+        const stops = bus.heading?.stops || [];
+        if (!stops.length) {
+            clearBusHeading();
+            showStatus(`BMTC did not say how far along its route ${bus.label} is, so where it is going cannot be drawn.`, true);
+            return false;
+        }
+        const data = headingData(bus);
+        if (map.getSource(HEADING_SOURCE)) map.getSource(HEADING_SOURCE).setData(data);
+        else {
+            map.addSource(HEADING_SOURCE, {type: "geojson", data});
+            map.addLayer({id: "bus-heading-casing", type: "line", source: HEADING_SOURCE, filter: ["==", ["get", "kind"], "line"],
+                layout: {"line-cap": "round", "line-join": "round"},
+                paint: {"line-color": "#ffffff", "line-width": 9, "line-opacity": 0.9}});
+            map.addLayer({id: "bus-heading-line", type: "line", source: HEADING_SOURCE, filter: ["==", ["get", "kind"], "line"],
+                layout: {"line-cap": "round", "line-join": "round"},
+                paint: {"line-color": "#f26b1d", "line-width": 5, "line-opacity": 1}});
+            map.addLayer({id: "bus-heading-arrows", type: "line", source: HEADING_SOURCE, filter: ["==", ["get", "kind"], "chevron"],
+                layout: {"line-cap": "round", "line-join": "round"},
+                paint: {"line-color": "#ffffff", "line-width": 3, "line-opacity": 0.95}});
+            map.addLayer({id: "bus-heading-stops", type: "circle", source: HEADING_SOURCE, filter: ["==", ["get", "kind"], "stop"],
+                paint: {"circle-radius": 4.5, "circle-color": "#ffffff", "circle-stroke-color": "#f26b1d", "circle-stroke-width": 2.5}});
+        }
+        dimJourneyRoutes();
+        const line = data.features[0].geometry.coordinates;
+        const end = line[line.length - 1];
+        const lastStop = stops[stops.length - 1];
+        const towards = bus.heading.towards || lastStop?.name;
+        const reachesEnd = lastStop && towards && lastStop.name === towards;
+        live.headingEnd?.remove();
+        const tag = document.createElement("div");
+        tag.className = "bus-heading-end";
+        tag.textContent = reachesEnd ? `🏁 ${bus.route.split(" ")[0]} ends at ${towards}`
+            : `${bus.route.split(" ")[0]} → towards ${towards} (shown to ${lastStop?.name || "here"})`;
+        // Labels open toward the middle of the route so they stay on screen at either end.
+        const lons = line.map(point => point[0]);
+        const middle = (Math.min(...lons) + Math.max(...lons)) / 2;
+        const inward = lon => lon <= middle ? "bottom-left" : "bottom-right";
+        live.headingEnd = new maplibregl.Marker({element: tag, anchor: inward(end[0]), offset: [0, -6]})
+            .setLngLat(end).addTo(map);
+        // Mark the traveller's own boarding stop when this bus is coming to it.
+        live.headingBoard?.remove();
+        live.headingBoard = null;
+        const board = bus.relevance === "approaching" ? (bus.job?.boardingStop || live.boardingStop) : null;
+        if (board && Number.isFinite(Number(board.lat)) && Number.isFinite(Number(board.lon))) {
+            const pin = document.createElement("div");
+            pin.className = "bus-heading-board";
+            pin.textContent = `Your stop · ${board.name}`;
+            live.headingBoard = new maplibregl.Marker({element: pin, anchor: inward(Number(board.lon)), offset: [0, -8]})
+                .setLngLat([Number(board.lon), Number(board.lat)]).addTo(map);
+        }
+        live.headingBusId = id;
+        if (frame) {
+            // The traveller asked to see this bus's route: give it the whole screen (panels slide away;
+            // "Show trip panels" brings them back).
+            enterMapFocus();
+            try {
+                const bounds = new maplibregl.LngLatBounds();
+                line.forEach(point => bounds.extend(point));
+                // Extra side room so the end and "your stop" tags are not cut off at the screen edge.
+                const width = window.innerWidth || 1200, height = window.innerHeight || 800;
+                const side = width < 700 ? 0 : Math.min(170, Math.round(width * 0.12));
+                const pad = roomyPadding(width < 700 ? 20 : 50, width < 700 ? 30 : 60);
+                const padding = {...pad, left: pad.left + side, right: pad.right + side, top: pad.top + (width < 700 ? 10 : 30)};
+                // Never let the padding eat more than 60% of the screen in either direction.
+                const squeeze = (a, b, size) => {
+                    const total = padding[a] + padding[b];
+                    if (total > size * 0.6) { const k = size * 0.6 / total; padding[a] = Math.round(padding[a] * k); padding[b] = Math.round(padding[b] * k); }
+                };
+                squeeze("left", "right", width);
+                squeeze("top", "bottom", height);
+                map.fitBounds(bounds, {padding, maxZoom: 15.5, duration: 700});
+            } catch (error) { /* framing is a convenience only */ }
+        }
+        return true;
     }
 
     function stopLiveBusTracking() {
@@ -1857,6 +2272,7 @@
         live.hasResult = false;
         live.framed = false;
         live.userMoved = false;
+        live.lastShown = null;
         $("liveBusMeta").textContent = "";
         $("liveJourneyChoice").hidden = true;
         $("liveJourneyStart").hidden = true;
@@ -1970,7 +2386,10 @@
             : bus.job?.sameStretch
                 ? `<span class="bus-option-tag same">Also goes ${live.alightStop?.name ? `to ${escapeHtml(live.alightStop.name)}` : "your way"} · same boarding stop</span>` : "";
         const reason = bus.reason && !approaching ? `<span class="bus-reason">${escapeHtml(bus.reason)}</span>` : "";
-        const dir = bus.direction ? `${escapeHtml(String(bus.direction).toUpperCase())} direction · ` : "";
+        const bearing = busBearing(bus);
+        const dir = bearing !== null
+            ? `<b class="bus-heading-word">➤ Heading ${compassWord(bearing)}${bus.heading?.towards ? ` · towards ${escapeHtml(bus.heading.towards)}` : ""}</b> · `
+            : bus.direction ? `${escapeHtml(String(bus.direction).toUpperCase())} direction · ` : "";
         return `<button type="button" data-bus-index="${index}" class="live-bus-vehicle bus-focus${stale ? " stale" : ""}${approaching ? "" : " unverified"}${live.selectedBusId === id ? " following" : ""}"><strong>${escapeHtml(bus.label)} · ${escapeHtml(bus.route)}</strong>${optionTag}${arrival}${badge} ${fresh}<span class="bus-meta">${dir}${age}${stop}${eta}${distance}</span>${reason}<span class="bus-focus-hint">${live.selectedBusId === id ? "Following this bus" : stale ? "Show last known position ↗" : "Show and follow on map ↗"}</span></button>`;
     }
 
@@ -2169,8 +2588,9 @@
                 const stale = bus.freshness !== "fresh";
                 const unverifiedBus = bus.relevance !== "approaching";
                 const state_ = stale ? "Last known position" : "Live bus";
-                const content = `<div class="bus-popup-content"><span class="bus-popup-status">${bus.group === "alternate" ? `Alternate option ${bus.job?.optionNumber || ""} · ` : ""}${unverifiedBus ? "Direction not verified · " : "Heading to the boarding stop · "}${state_}</span><strong>${escapeHtml(bus.route)}</strong><b>${escapeHtml(bus.label)}</b><p>${escapeHtml(String(bus.direction || "").toUpperCase())} direction${bus.next_stop ? `<br>Next: ${escapeHtml(bus.next_stop)}` : ""}</p><small>${bus.age_seconds == null ? "Update time unavailable" : `Updated ${Math.round(bus.age_seconds)} seconds ago`}</small></div>`;
-                const label = `${bus.group === "alternate" ? "alternate option, " : ""}${bus.route}, bus ${bus.label}, ${stale ? "last known position" : "live"}, ${unverifiedBus ? "direction not verified" : "heading to your stop"}`;
+                const content = `<div class="bus-popup-content"><span class="bus-popup-status">${bus.group === "alternate" ? `Alternate option ${bus.job?.optionNumber || ""} · ` : ""}${unverifiedBus ? "Direction not verified · " : "Heading to the boarding stop · "}${state_}</span><strong>${escapeHtml(bus.route)}</strong><b>${escapeHtml(bus.label)}</b><p>${escapeHtml(String(bus.direction || "").toUpperCase())} direction${bus.next_stop ? `<br>Next: ${escapeHtml(bus.next_stop)}` : ""}${busBearing(bus) !== null ? `<br>Heading ${compassWord(busBearing(bus))}` : ""}${bus.heading?.towards ? `<br>Towards: ${escapeHtml(bus.heading.towards)}` : ""}</p><small>${bus.age_seconds == null ? "Update time unavailable" : `Updated ${Math.round(bus.age_seconds)} seconds ago`}</small></div>`;
+                const bearingNow = busBearing(bus);
+                const label = `${bus.group === "alternate" ? "alternate option, " : ""}${bus.route}, bus ${bus.label}, ${bearingNow !== null ? `heading ${compassWord(bearingNow)}, ` : ""}${stale ? "last known position" : "live"}, ${unverifiedBus ? "direction not verified" : "heading to your stop"}`;
                 const previous = previousMarkers.get(id);
                 if (previous) {
                     previous.marker.setLngLat([bus.lon, bus.lat]);
@@ -2179,6 +2599,7 @@
                     previous.marker.getElement().classList.toggle("stale", stale);
                     previous.marker.getElement().classList.toggle("unverified", unverifiedBus);
                     previous.marker.getElement().classList.toggle("alternate", bus.group === "alternate");
+                    setMarkerDirection(previous.marker.getElement(), busBearing(bus));
                     previous.marker.getElement().querySelector(".bus-route-label").textContent = bus.route.split(" ")[0];
                     previous.marker.getElement().setAttribute("aria-label", label);
                     live.markers.push(previous);
@@ -2189,21 +2610,38 @@
                 const element = document.createElement("button");
                 element.type = "button";
                 element.className = `live-bus-marker${stale ? " stale" : ""}${unverifiedBus ? " unverified" : ""}${bus.group === "alternate" ? " alternate" : ""}`;
-                element.innerHTML = `<span aria-hidden="true">🚌</span><span class="bus-route-label">${escapeHtml(bus.route.split(" ")[0])}</span>`;
+                element.innerHTML = `<span class="bus-dir" aria-hidden="true" hidden></span><span aria-hidden="true">🚌</span><span class="bus-route-label">${escapeHtml(bus.route.split(" ")[0])}</span>`;
+                setMarkerDirection(element, busBearing(bus));
                 const marker = new maplibregl.Marker({element, anchor: "center", offset})
                     .setLngLat([bus.lon, bus.lat]).setPopup(popup).addTo(state.map);
                 element.addEventListener("click", () => {
-                    chooseLiveBusJourney(bus);
+                    // Use the latest report for this bus (the marker outlives a single refresh).
+                    const current = live.lastShown?.find(item => liveBusKey(item) === id) || bus;
+                    chooseLiveBusJourney(current);
                     live.selectedBusId = !stale ? id : null;
                     $("liveBusFollow").hidden = stale;
-                    if (!stale) $("liveBusFollow").textContent = `Stop following ${bus.label}`;
-                    state.map.easeTo({center: [bus.lon, bus.lat], zoom: Math.max(state.map.getZoom(), 15), duration: 650});
+                    if (!stale) $("liveBusFollow").textContent = `Stop following ${current.label}`;
+                    if (live.headingBusId === id) {
+                        clearBusHeading();   // second click hides the line again
+                        state.map.easeTo({center: [current.lon, current.lat], zoom: Math.max(state.map.getZoom(), 15), duration: 650});
+                    } else if (showBusHeading(current)) {
+                        // The popup would sit on top of the line; the end tag and the panel row carry the details.
+                        setTimeout(() => marker.getPopup()?.remove(), 0);
+                    } else {
+                        state.map.easeTo({center: [current.lon, current.lat], zoom: Math.max(state.map.getZoom(), 15), duration: 650});
+                    }
                 });
                 element.setAttribute("aria-label", label);
                 live.markers.push({id, marker});
             });
             previousMarkers.forEach((entry, id) => { if (!retained.has(id)) entry.marker.remove(); });
             spreadBusMarkers();
+            live.lastShown = shown;
+            if (live.headingBusId) {
+                const headed = shown.find(bus => liveBusKey(bus) === live.headingBusId);
+                if (headed?.heading?.stops?.length) showBusHeading(headed, {frame: false});
+                else clearBusHeading();   // the bus left the list or lost its position along the route
+            }
             $("liveBusList").querySelectorAll("[data-bus-index]").forEach(button => button.addEventListener("click", () => {
                 const bus = shown[Number(button.dataset.busIndex)];
                 const entry = live.markers.find(item => item.id === liveBusKey(bus));
@@ -2214,9 +2652,11 @@
                 $("liveBusFollow").hidden = !fresh;
                 if (fresh) $("liveBusFollow").textContent = `Stop following ${bus.label}`;
                 $("liveBusList").querySelectorAll("[data-bus-index]").forEach(row => row.classList.toggle("following", row === button && fresh));
-                state.map.easeTo({center: [bus.lon, bus.lat], zoom: Math.max(state.map.getZoom(), 15), duration: 650});
                 live.markers.forEach(item => item.marker.getPopup().remove());
-                entry.marker.togglePopup();
+                if (!showBusHeading(bus)) {
+                    state.map.easeTo({center: [bus.lon, bus.lat], zoom: Math.max(state.map.getZoom(), 15), duration: 650});
+                    entry.marker.togglePopup();
+                }
             }));
             if (!live.framed && !live.selectedBusId && shownMain.length) {
                 // First answer for this check: show the boarding stop and the buses coming to it,
@@ -2254,6 +2694,7 @@
     }
 
     function trackBmtcRoute(routeNumber, itinerary, index, boardingStop = null, alightStop = null) {
+        exitMapFocus();
         closeChat();
         const key = liveKey(routeNumber, boardingStop);
         if (state.liveBus.route && state.liveBus.key === key) {
@@ -2287,6 +2728,7 @@
     }
 
     function trackSearchBuses(routes, journeys = [], autoForJourney = false, boardingStop = null, alightStop = null, alternates = []) {
+        if (!autoForJourney) exitMapFocus();
         if (!autoForJourney) closeChat();
         // On laptop-sized screens the options list, search card and live panel together cover the map.
         // Fold the options to their header (▴ brings them back) so the buses can actually be seen.
@@ -2445,6 +2887,7 @@
     }
 
     function startJourney(route, index) {
+        exitMapFocus();
         closeChat();
         if (state.journey.active) stopJourneyTracking();
 
@@ -2572,6 +3015,7 @@
         state.origin = null;
         state.destination = null;
         state.lastPlan = null;
+        syncExplainButton();
         if ($("routeMeta")) $("routeMeta").textContent = "";
 
         if (state.originMarker) {
@@ -2602,6 +3046,7 @@
     }
 
     function showRoutePanel() {
+        exitMapFocus();
         routePanel.classList.add("open");
         setRoutesCollapsed(false);
     }
@@ -2803,6 +3248,12 @@
         $("closeChatBtn")?.addEventListener("click", closeChat);
         $("newJourneyBtn")?.addEventListener("click", resetJourney);
         $("closeRoutesBtn")?.addEventListener("click", () => setRoutesCollapsed(!routePanel.classList.contains("collapsed")));
+        $("showPanelsBtn")?.addEventListener("click", exitMapFocus);
+        document.addEventListener?.("keydown", (event) => { if (event.key === "Escape") exitMapFocus(); });
+        $("explainBtn")?.addEventListener("click", (event) => {
+            event.stopPropagation();
+            explainOptions();
+        });
         $("expandRoutesBtn")?.addEventListener("click", (event) => {
             event.stopPropagation();
             setRoutesExpanded(!routePanel.classList.contains("expanded"));
@@ -2826,8 +3277,14 @@
 
         $("chatSendBtn")?.addEventListener("click", () => {
             const input = $("chatInput");
-            runAssistantCommand(input.value);
+            if (!input.value.trim()) return;
+            if (state.chatBusy) {
+                showStatus("Still working on your last request. Your new one is kept in the box.", true);
+                return;
+            }
+            const text = input.value;
             input.value = "";
+            runAssistantCommand(text);
         });
 
         $("chatInput")?.addEventListener("keydown", (event) => {
@@ -2841,6 +3298,10 @@
             if (event.key === "Enter") {
                 event.preventDefault();
                 const text = event.target.value;
+                if (!text.trim() || state.chatBusy) {
+                    if (state.chatBusy) showStatus("Still working on your last request. Press Enter again in a moment.", true);
+                    return;   // keep what was typed
+                }
                 event.target.value = "";
                 runAssistantCommand(text, { fromMainBar: true });
             }

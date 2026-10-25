@@ -443,6 +443,29 @@ class LiveRelevanceTests(unittest.TestCase):
         self.assertEqual(buses["soon"]["board_stop"], "Stop 2")
         self.assertIsNone(buses["other"].get("board_eta"), "no arrival estimate for a bus going the other way")
 
+    def test_heading_lists_the_next_stops_on_the_buses_own_run(self):
+        post = feed(up_buses=[(fixture_bus("east", 0, 15), 0)], down_buses=[(fixture_bus("west", 6, 15), 1)])
+        buses = self.by_id(self.live(post))
+        heading = buses["east"]["heading"]
+        self.assertEqual([s["name"] for s in heading["stops"]], [f"Stop {i}" for i in range(1, 8)],
+                         "stops after the bus, in BMTC's order, to the end of a short line")
+        self.assertEqual(heading["towards"], "Stop 7")
+        self.assertEqual(heading["direction"], "up")
+        self.assertNotIn("heading", buses["west"], "hidden (opposite direction) buses carry no line")
+
+    def test_heading_runs_to_the_end_of_the_buses_route_and_marks_the_boarding_stop(self):
+        long_line = list(range(8)) * 6           # 48 stations on one run
+        post = feed(up_buses=[(fixture_bus("far", 0, 15), 0)], up_order=long_line, down_order=[7, 6])
+        branch = bmtc_live._parse_branches([(1, post("SearchByRouteDetails_v4", {}))])[0]
+        whole = bmtc_live._heading(branch, 0)
+        self.assertEqual(len(whole["stops"]), 47, "every remaining stop to the last one")
+        self.assertEqual(whole["towards"], "Stop 7")
+        self.assertNotIn("board_stop", whole)
+        coming = bmtc_live._heading(branch, 3, until=20)
+        self.assertEqual(coming["board_stop"], "Stop 4", "station 20 of the run is Stop 4")
+        self.assertIsNone(bmtc_live._heading(branch, None), "no position along the route: no line")
+        self.assertIsNone(bmtc_live._heading(branch, 47), "already at the last stop")
+
     def test_no_eta_from_bmtc_means_none_shown(self):
         buses = self.by_id(self.live(feed(up_buses=[(fixture_bus("quiet", 0, 15), 0)])))
         self.assertIsNone(buses["quiet"]["board_eta"])

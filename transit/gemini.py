@@ -42,11 +42,15 @@ Every message must become exactly ONE function call:
   the name of the BMTC bus stop that serves it if you are confident (e.g. "Phoenix mall Whitefield" ->
   "Phoenix Market City"); otherwise give the landmark name as written. Never invent a place.
   Leave origin or destination empty when the traveller did not mention it (the app keeps the stop that
-  is already selected). "from here"/"my location" means leave origin empty.
+  is already selected). If the start is the traveller's current position ("from here", "my location",
+  "where I am", "near me"), set from_my_location to true and leave origin empty.
   depart_at is 24-hour HH:MM in Bengaluru time, only if the traveller asked for a time; resolve phrases
   like "in 30 minutes" or "tonight at 9" using the current time given below. Otherwise leave it empty.
   preference: "less_walking", "fewer_transfers" or "fastest" only if asked for; otherwise empty.
 - swap_trip: the traveller wants the reverse / return journey of the currently selected trip.
+- check_live_buses: the traveller asks where a bus is right now, whether it is coming, how far away it is,
+  or to track it ("where is my bus", "when will 500D come", "is KBS-1K near"). Put the bus number in
+  route only if the traveller said one; otherwise leave it empty (the app uses the selected journey).
 - reply: anything else (greetings, thanks, questions about how to use the app, general questions).
   Answer in one to three short sentences, in the traveller's language. NEVER state bus numbers, routes,
   timings, frequencies, fares or live bus positions in a reply: those come only from the planner and the
@@ -63,7 +67,12 @@ TOOLS = [{"functionDeclarations": [
          "origin": {"type": "string", "description": "Start place or BMTC stop name. Omit to keep the selected start."},
          "destination": {"type": "string", "description": "Destination place or BMTC stop name. Omit to keep the selected one."},
          "preference": {"type": "string", "description": "Only if asked for: fastest, less_walking or fewer_transfers."},
-         "depart_at": {"type": "string", "description": "24-hour HH:MM departure time, only if a time was asked for."}}}},
+         "depart_at": {"type": "string", "description": "24-hour HH:MM departure time, only if a time was asked for."},
+         "from_my_location": {"type": "boolean", "description": "True when the start is the traveller's current position."}}}},
+    {"name": "check_live_buses",
+     "description": "Show BMTC live bus positions for the selected journey, or for a bus number the traveller named.",
+     "parameters": {"type": "object", "properties": {
+         "route": {"type": "string", "description": "Bus number exactly as the traveller said it, e.g. 500D. Omit if none."}}}},
     {"name": "swap_trip",
      "description": "Reverse the currently selected start and destination (return trip)."},
     {"name": "reply",
@@ -143,6 +152,12 @@ def _error_text(data) -> str:
     return ""
 
 
+def clean_route(value) -> str | None:
+    """A bus number as BMTC writes them (500D, KBS-1K, 335-E, V-335E); anything else is dropped."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip().upper()
+    return text if re.fullmatch(r"[A-Z0-9][A-Z0-9 .-]{0,19}", text) and re.search(r"\d", text) else None
+
+
 def _clean_text(value, limit: int) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit]
@@ -189,7 +204,8 @@ def build_request(message: str, *, origin_name=None, destination_name=None, pref
         "contents": contents,
         "tools": TOOLS,
         "toolConfig": {"functionCallingConfig": {"mode": "ANY",
-                                                 "allowedFunctionNames": ["plan_journey", "swap_trip", "reply"]}},
+                                                 "allowedFunctionNames": ["plan_journey", "swap_trip",
+                                                                          "check_live_buses", "reply"]}},
     }
 
 
@@ -216,9 +232,12 @@ def parse_response(data: dict) -> dict:
                 "origin": _clean_text(args.get("origin"), 80) or None,
                 "destination": _clean_text(args.get("destination"), 80) or None,
                 "preference": preference if preference in PREFERENCES else None,
-                "depart_at": _valid_time(args.get("depart_at"))}
+                "depart_at": _valid_time(args.get("depart_at")),
+                "from_my_location": args.get("from_my_location") is True}
     if name == "swap_trip":
         return {"action": "swap"}
+    if name == "check_live_buses":
+        return {"action": "live", "route": clean_route(args.get("route"))}
     if name == "reply":
         text = _clean_text(args.get("text"), 600)
         if not text:
@@ -292,3 +311,117 @@ def load_dotenv(path) -> None:
         name, value = name.strip(), value.strip().strip('"').strip("'")
         if re.fullmatch(r"[A-Z][A-Z0-9_]*", name) and name not in os.environ:
             os.environ[name] = value
+
+
+# ---------------------------------------------------------------- explaining the options
+EXPLAIN_PROMPT = """You explain bus journey options to a traveller in Bengaluru, in plain friendly English.
+You get the options as facts. Write at most three short sentences that help the traveller choose:
+which is quickest, which has least walking or fewest changes, and any trade-off worth knowing
+(a long way round, an early or late departure, other bus numbers that also go the same way).
+Use ONLY the facts given. Never add a bus number, time, duration, count, fare, frequency or place
+that is not in the facts. Do not repeat every number; pick what matters. Call explain with the text."""
+
+
+def facts_from_routes(routes) -> list[dict]:
+    """Compact, validated facts (first five options) from route dicts sent by the page."""
+    facts = []
+    for index, route in enumerate((routes or [])[:5]):
+        if not isinstance(route, dict):
+            continue
+        def num(key):
+            try:
+                value = int(round(float(route.get(key))))
+            except (TypeError, ValueError):
+                return None
+            return value if 0 <= value <= 600 else None
+        buses = [clean_route(name) for name in (route.get("route_numbers") or [])][:5]
+        also = [clean_route(name) for name in (route.get("also_lines") or [])][:4]
+        fact = {
+            "option": index + 1,
+            "buses": [b for b in buses if b] if route.get("transit", True) else [],
+            "walk_only": route.get("transit") is False,
+            "leave": _valid_time(route.get("departure_time")),
+            "arrive": _valid_time(route.get("arrival_time")),
+            "door_to_door_min": num("trip_minutes"),
+            "leave_in_min": num("leave_in_minutes"),
+            "changes": num("transfers"),
+            "walking_min": num("walking_minutes"),
+            "long_way_round": bool(route.get("detour")),
+            "other_buses_same_first_stretch": [a for a in also if a],
+        }
+        facts.append({key: value for key, value in fact.items()
+                      if not (value is None or value is False or value == [])})
+    return facts
+
+
+_TIME_TOKEN = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b")
+_CODE_TOKEN = re.compile(r"\b(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9]+(?:-[A-Z0-9]+)*\b", re.I)
+
+
+def explanation_is_grounded(text: str, facts: list[dict]) -> bool:
+    """True only if every time, number and bus code in the text appears in the facts."""
+    times, numbers, codes = set(), set(), set()
+    for fact in facts:
+        for key, value in fact.items():
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                numbers.add(value)
+            elif isinstance(value, str) and _TIME_TOKEN.fullmatch(value):
+                times.add(value)
+            elif isinstance(value, list):
+                codes.update(str(v).upper() for v in value)
+    numbers.add(len(facts))
+    for match in _TIME_TOKEN.finditer(text):
+        if f"{int(match.group(1)):02d}:{match.group(2)}" not in times:
+            return False
+    stripped = _TIME_TOKEN.sub(" ", text)
+    for match in _CODE_TOKEN.finditer(stripped):
+        token = match.group(0).upper()
+        if token not in codes and not any(token in code.split() for code in codes):
+            return False
+    stripped = _CODE_TOKEN.sub(" ", stripped)
+    for match in re.finditer(r"\d+", stripped):
+        if int(match.group(0)) not in numbers:
+            return False
+    return True
+
+
+def explain(routes, *, preference=None, transport=None, timeout: float = TIMEOUT_SECONDS) -> str:
+    """A short comparison of the options, checked against the facts. Raises GeminiUnavailable."""
+    config = settings()
+    if not config["enabled"]:
+        raise GeminiUnavailable("no_key")
+    facts = facts_from_routes(routes)
+    if len(facts) < 1:
+        raise GeminiUnavailable("bad_response")
+    body = {
+        "systemInstruction": {"parts": [{"text": EXPLAIN_PROMPT}]},
+        "contents": [{"role": "user", "parts": [{"text":
+            f"Ranking preference: {preference if preference in PREFERENCES else 'fastest'}.\n"
+            f"Options (facts): {json.dumps(facts, ensure_ascii=False)}"}]}],
+        "tools": [{"functionDeclarations": [{
+            "name": "explain", "description": "The short explanation for the traveller.",
+            "parameters": {"type": "object", "properties": {
+                "text": {"type": "string", "description": "At most three short sentences."}}, "required": ["text"]}}]}],
+        "toolConfig": {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": ["explain"]}},
+    }
+    url = f"{API_ROOT}/models/{config['model']}:generateContent"
+    try:
+        status_code, data = (transport or _post)(url, body, config["key"], timeout)
+    except (TimeoutError, OSError, URLError, ValueError) as error:
+        _log(f"explain failed: {type(error).__name__}: {error}", config["key"])
+        raise GeminiUnavailable("network") from None
+    if status_code != 200:
+        _log(f"explain: HTTP {status_code}: {_error_text(data) or 'no error message'}", config["key"])
+        raise GeminiUnavailable("rate_limited" if status_code == 429 else "bad_request")
+    candidate = ((data or {}).get("candidates") or [{}])[0]
+    call = next((part.get("functionCall") for part in (candidate.get("content") or {}).get("parts") or []
+                 if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)), None)
+    text = _clean_text(((call or {}).get("args") or {}).get("text"), 500)
+    if not text:
+        raise GeminiUnavailable("bad_response")
+    if not explanation_is_grounded(text, facts):
+        _log("explain: answer mentioned a time, number or bus not in the results; discarded", config["key"])
+        raise GeminiUnavailable("ungrounded")
+    return text

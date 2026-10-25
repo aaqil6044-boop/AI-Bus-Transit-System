@@ -38,7 +38,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync('static/app.js', 'utf8').replace('\n    init();',
-    '\n    globalThis.t = {state, refreshLiveBuses, stopLiveBusTracking, trackBmtcRoute, trackSearchBuses, startJourney, stopJourneyTracking, goToGuideStep, guideSteps, routeLiveScope, liveKey, applyAssistantResult, busFreshness, setRoutesCollapsed, showRoutePanel, mapPadding, planJourney, swapEndpoints, resolveTypedEndpoints, routeAlternates, routeDetourNote, routeLiveScope, liveKey, parseBmtcTime, boardEtaMinutes, setRoutesExpanded, setRoutesCollapsed};'), context);
+    '\n    globalThis.t = {state, refreshLiveBuses, stopLiveBusTracking, trackBmtcRoute, trackSearchBuses, startJourney, stopJourneyTracking, goToGuideStep, guideSteps, routeLiveScope, liveKey, applyAssistantResult, busFreshness, setRoutesCollapsed, showRoutePanel, mapPadding, planJourney, swapEndpoints, resolveTypedEndpoints, routeAlternates, routeDetourNote, routeLiveScope, liveKey, parseBmtcTime, boardEtaMinutes, setRoutesExpanded, setRoutesCollapsed, showBusHeading, clearBusHeading, busBearing, compassWord, directionChevrons};'), context);
 const T = context.t;
 const { state } = T;
 const camera = [];
@@ -172,6 +172,74 @@ const answer = (vehicles, hidden = []) => ({ ok: true, json: async () => ({ avai
     assert.match(h4, /~[34] min at Stop One/, "ETA is whole minutes, so the seconds can drop it to 3");
     assert.ok(h4.indexOf('KA-soon') < h4.indexOf('KA-later'), 'listed by BMTC arrival estimate, not by stop count');
     assert.match(elements.get('liveBusStatus').textContent, /next 500D in ~[34] min$/);
+
+    // where a clicked bus is heading: a light line through its next stops, kept in step with refreshes
+    const sources = new Map(), layers = new Set();
+    Object.assign(state.map, {
+        addSource: (id, spec) => sources.set(id, {data: spec.data, setData(d) { this.data = d; }}),
+        getSource: id => sources.get(id), removeSource: id => sources.delete(id),
+        addLayer: l => layers.add(l.id), getLayer: id => layers.has(id) ? {id} : null, removeLayer: id => layers.delete(id)});
+    state.mapReady = true;
+    T.stopLiveBusTracking();
+    const heading = { stops: [{ name: 'Next A', lat: 13.002, lon: 77.502 }, { name: 'Next B', lat: 13.003, lon: 77.503 }],
+        towards: 'Terminus', remaining_stops: 9, direction: 'up' };
+    fetchImpl = async () => answer([bus('h1', '500D', 13.001, 77.501, { heading })]);
+    T.trackSearchBuses(['500D'], [A], false, { name: 'Stop One', lat: 13, lon: 77.5 }, null, []);
+    await new Promise(r => setTimeout(r, 30));
+    const headed = state.liveBus.lastShown.find(b => b.id === 'h1');
+    assert.equal(T.showBusHeading(headed), true);
+    const line = sources.get('bus-heading').data.features[0].geometry.coordinates;
+    assert.equal(JSON.stringify(line), JSON.stringify([[77.501, 13.001], [77.502, 13.002], [77.503, 13.003]]), 'starts at the bus, then its next stops');
+    assert.ok(layers.has('bus-heading-line') && layers.has('bus-heading-stops'));
+    assert.match(state.liveBus.headingEnd.element.textContent, /500D → towards Terminus \(shown to Next B\)/);
+    assert.equal(state.liveBus.headingBoard.element.textContent, 'Your stop · Stop One', 'the traveller\'s stop is marked on the line');
+    // when the line reaches the bus's final stop, the tag says where it ends
+    T.showBusHeading({ ...headed, heading: { ...heading, towards: 'Next B' } }, { frame: false });
+    assert.match(state.liveBus.headingEnd.element.textContent, /🏁 500D ends at Next B/);
+    T.showBusHeading(headed, { frame: false });
+    // the bus moves on the next refresh: the line follows it
+    fetchImpl = async () => answer([bus('h1', '500D', 13.002, 77.502, { heading: { ...heading, stops: heading.stops.slice(1) } })]);
+    await T.refreshLiveBuses(state.liveBus.session, true);
+    assert.equal(sources.get('bus-heading').data.features[0].geometry.coordinates[0][0], 77.502);
+    // when the server laid the line along the road, that road path is drawn (not straight stop joins)
+    const road = [[77.501, 13.001], [77.5015, 13.0012], [77.502, 13.002], [77.5028, 13.0024], [77.503, 13.003]];
+    T.showBusHeading({ ...headed, heading: { ...heading, path: road, path_source: 'road' } }, { frame: false });
+    assert.equal(JSON.stringify(sources.get('bus-heading').data.features[0].geometry.coordinates), JSON.stringify(road));
+    // a bus without a known position along its route gets no line, and says why
+    assert.equal(T.showBusHeading({ ...headed, heading: null }), false);
+    assert.equal(sources.has('bus-heading'), false);
+    T.showBusHeading(headed);
+    T.stopLiveBusTracking();
+    assert.equal(sources.has('bus-heading'), false, 'stopping live tracking removes the line');
+    assert.equal(state.liveBus.headingEnd, null);
+
+    // which way a bus is driving: from its road path, never guessed
+    const at0 = { lat: 13.0, lon: 77.6 };
+    const north = T.busBearing({ ...at0, heading: { path: [[77.6, 13.0], [77.6, 13.002], [77.6, 13.004]] } });
+    const east = T.busBearing({ ...at0, heading: { path: [[77.6, 13.0], [77.602, 13.0]] } });
+    const southWest = T.busBearing({ ...at0, heading: { path: [[77.6, 13.0], [77.598, 12.998]] } });
+    assert.ok(north < 1 || north > 359, `north ~0, got ${north}`);
+    assert.ok(Math.abs(east - 90) < 1, `east ~90, got ${east}`);
+    assert.equal(T.compassWord(north), 'north');
+    assert.equal(T.compassWord(east), 'east');
+    assert.equal(T.compassWord(southWest), 'south-west');
+    assert.equal(T.busBearing({ ...at0, heading: null }), null, 'no route path: no arrow');
+    assert.equal(T.busBearing({ ...at0, heading: { path: [[77.6, 13.0], [77.60001, 13.00001]] } }), null, 'a few metres is not a direction');
+    // it looks ~120 m ahead, so a kink right at the bus does not flip the arrow
+    const kink = T.busBearing({ ...at0, heading: { path: [[77.6, 13.0], [77.60005, 12.99997], [77.6, 13.003]] } });
+    assert.equal(T.compassWord(kink), 'north');
+    const marks = T.directionChevrons([[77.6, 13.0], [77.6, 13.02]]);   // ~2.2 km north
+    assert.ok(marks.length >= 3, 'chevrons along the line');
+    const [w1, tip, w2] = marks[0].geometry.coordinates;
+    assert.ok(tip[1] > w1[1] && tip[1] > w2[1], 'chevrons point the way the bus travels');
+    assert.equal(T.directionChevrons([[77.6, 13.0], [77.6, 13.0005]]).length, 0, 'none on a very short line');
+    // the bus row says it in words
+    T.stopLiveBusTracking();
+    fetchImpl = async () => answer([bus('dir1', '500D', 13.0, 77.6, { heading: { path: [[77.6, 13.0], [77.6, 13.003]], stops: [{ name: 'X', lat: 13.003, lon: 77.6 }], towards: 'Terminus' } })]);
+    T.trackSearchBuses(['500D'], [A], false, { name: 'Stop One', lat: 13, lon: 77.5 }, null, []);
+    await new Promise(r => setTimeout(r, 30));
+    assert.match(elements.get('liveBusList').innerHTML, /➤ Heading north · towards Terminus/);
+    T.stopLiveBusTracking();
 
     // journey options panel: standard / expanded / folded
     const panel = elements.get('routePanel');

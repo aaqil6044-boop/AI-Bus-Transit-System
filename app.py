@@ -13,7 +13,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from transit import gemini
+from transit import gemini, heading_paths
 from transit.assistant import handle_assistant
 from transit.planner import search_stops
 from transit.otp import plan_journey, router_status, RouterUnavailable
@@ -21,6 +21,8 @@ from transit.network import network_summary
 from transit.bmtc_live import BMTCUnavailable, live_route
 
 ROOT = Path(__file__).parent
+# Bump together with BUILD in static/app.js: the page warns when it talks to an older server.
+BUILD = "2026-10-25-busroute-1"
 ROUTES_FILE = ROOT / "data" / "routes.json"
 FEEDBACK_FILE = ROOT / "data" / "feedback.jsonl"
 TRANSIT_DATABASE = ROOT / "data" / "bengaluru_transit.db"
@@ -167,6 +169,7 @@ class TransitHandler(SimpleHTTPRequestHandler):
                 "database": TRANSIT_DATABASE.exists(),
                 "router": router_status(),
                 "assistant": gemini.status(),
+                "build": BUILD,
                 "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             })
             return True
@@ -180,10 +183,14 @@ class TransitHandler(SimpleHTTPRequestHandler):
             route_number = query.get("q", [""])[0]
             try:
                 number = lambda name: float(query[name][0]) if query.get(name) and query[name][0] != "" else None
-                self._json_response(live_route(
+                result = live_route(
                     route_number, number("stop_lat"), number("stop_lon"),
                     force_refresh=query.get("refresh", [""])[0] == "1",
-                    alight_lat=number("alight_lat"), alight_lon=number("alight_lon")))
+                    alight_lat=number("alight_lat"), alight_lon=number("alight_lon"))
+                # Lay each bus's "heading" line along the route's own roads from the timetable.
+                if TRANSIT_DATABASE.exists():
+                    heading_paths.attach(TRANSIT_DATABASE, result)
+                self._json_response(result)
             except BMTCUnavailable as error:
                 status = HTTPStatus.SERVICE_UNAVAILABLE if error.status in (401, 403) else HTTPStatus.BAD_GATEWAY
                 self._json_response({"available": False, "error": str(error)}, status=status)
@@ -263,6 +270,23 @@ class TransitHandler(SimpleHTTPRequestHandler):
             except ValueError as error:
                 self._json_response({"ok": False, "error": str(error), "reply": str(error)},
                                     status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/explain":
+            # A short Gemini comparison of the options on screen, checked against those options.
+            payload = self._read_json()
+            if payload is None:
+                return
+            routes = payload.get("routes")
+            if not isinstance(routes, list) or not routes:
+                self._json_response({"ok": False, "error": "No journey options to explain."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                text = gemini.explain(routes[:5], preference=payload.get("preference"))
+            except gemini.GeminiUnavailable as error:
+                self._json_response({"ok": False, "reason": error.reason})
+                return
+            self._json_response({"ok": True, "text": text, "engine": "gemini"})
             return
 
         if path == "/api/feedback":

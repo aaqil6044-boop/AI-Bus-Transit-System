@@ -2338,3 +2338,72 @@ details.live-direction-note > summary { cursor: pointer; font-weight: 700; }
 .chat-message .chat-ai-tag { display: block; margin-top: 6px; font-size: .78rem; color: #a9bfd0; }
 .chat-message .chat-ai-tag.notice { color: #fcd581; }
 .chat-panel.ai-on .gemini-orb { box-shadow: 0 0 0 2px #8ab4ff, 0 0 16px #8ab4ff88; }
+.route-explain-btn { border: 1px solid #6f8fd8; background: rgba(138, 180, 255, .12); color: #cfe0ff; border-radius: 99px;
+    padding: 6px 12px; font: 600 13px system-ui; cursor: pointer; }
+.route-explain-btn:hover { border-color: #8ab4ff; color: #fff; }
+.route-explain-btn[hidden] { display: none; }
+/* The chat is opened on purpose, so it sits in front of the live and guidance panels. */
+.chat-panel.open { z-index: 45; }
+
+/* Where a clicked bus is heading next */
+.bus-heading-end { padding: 4px 9px; border-radius: 8px; background: #132738; color: #dbe8ff; border: 1px solid #6f8fd8;
+    font: 600 12px system-ui; white-space: nowrap; box-shadow: 0 4px 14px #0007; pointer-events: none; }
+
+/* ===== Map focus: panels slide off the screen edges while the traveller moves the map ===== */
+.command-panel, #liveBusPanel, #journeyGuide, .brand {
+    transition: transform .42s cubic-bezier(.2, .8, .2, 1), opacity .32s ease; }
+.route-panel.open { transition: height .38s cubic-bezier(.2, .8, .2, 1), box-shadow .3s ease,
+    transform .42s cubic-bezier(.2, .8, .2, 1), opacity .32s ease; }
+body.map-focus .command-panel { transform: translateX(calc(-100% - 40px)); opacity: 0; pointer-events: none; }
+body.map-focus .route-panel.open { transform: translateY(calc(100% + 40px)); opacity: 0; pointer-events: none; }
+body.map-focus #liveBusPanel, body.map-focus #journeyGuide { transform: translateX(calc(100% + 40px)); opacity: 0; pointer-events: none; }
+body.map-focus .brand { transform: translateY(-6px); opacity: .85; }
+
+.show-panels-pill { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 50;
+    padding: 12px 22px; border-radius: 99px; border: 1px solid #4fd1a1; background: rgba(13, 25, 38, .94);
+    color: #e8fff5; font: 700 15px system-ui; cursor: pointer; box-shadow: 0 10px 30px #0008;
+    animation: pill-in .35s cubic-bezier(.2, .8, .2, 1); }
+.show-panels-pill:hover { background: #163245; }
+.show-panels-pill[hidden] { display: none; }
+@keyframes pill-in { from { transform: translate(-50%, 24px); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+    .command-panel, #liveBusPanel, #journeyGuide, .brand, .route-panel.open { transition: none; }
+    .show-panels-pill { animation: none; }
+}
+.bus-heading-end { background: #f26b1d; color: #fff; border-color: #fff; font-size: 13px; }
+.bus-heading-board { padding: 3px 8px; border-radius: 8px; background: #fff; color: #b8440b; border: 2px solid #f26b1d;
+    font: 700 12px system-ui; white-space: nowrap; box-shadow: 0 4px 12px #0006; pointer-events: none; }
+/* The panels' entrance animations hold their position ("fill: both"), which would pin them on screen. */
+body.map-focus .command-panel, body.map-focus .route-panel, body.map-focus #liveBusPanel,
+body.map-focus #journeyGuide, body.map-focus .brand { animation: none !important; }
+@media (max-width: 760px) { .bus-heading-end, .bus-heading-board { font-size: 11px; padding: 3px 7px; } }
+
+/* ===== "Thinking" feedback while the assistant works ===== */
+.ai-status { margin: 8px 2px 0; font-size: .92rem; font-weight: 600; color: #9fe3c4; display: flex; align-items: center; gap: 8px; }
+.ai-status[hidden] { display: none; }
+.ai-status::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #9fe3c455;
+    border-top-color: #9fe3c4; animation: ai-spin .8s linear infinite; flex: 0 0 auto; }
+.ai-command.thinking .ai-input-wrapper { border-color: #8ab4ff; box-shadow: 0 0 0 3px #8ab4ff33; animation: ai-glow 1.4s ease-in-out infinite; }
+.ai-command.thinking .ai-icon { animation: ai-spin 1.6s linear infinite; }
+.chat-message.thinking { font-style: normal; color: #cfe0ff; }
+.chat-message.thinking::after { content: ""; display: inline-block; width: 1.4em; text-align: left; animation: ai-dots 1.2s steps(4, end) infinite; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+@keyframes ai-glow { 50% { box-shadow: 0 0 0 5px #8ab4ff22; } }
+@keyframes ai-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+@media (prefers-reduced-motion: reduce) {
+    .ai-status::before, .ai-command.thinking .ai-icon, .ai-command.thinking .ai-input-wrapper, .chat-message.thinking::after { animation: none; }
+    .chat-message.thinking::after { content: "…"; }
+}
+
+/* Direction arrow on a live bus marker (points the way the bus is driving) */
+.live-bus-marker { position: relative; }
+.bus-dir { position: absolute; inset: -13px; pointer-events: none; transition: transform .5s ease; }
+.bus-dir[hidden] { display: none; }
+.bus-dir::before { content: ""; position: absolute; top: -2px; left: 50%; transform: translateX(-50%);
+    border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 13px solid #f26b1d;
+    filter: drop-shadow(0 0 1.5px #fff) drop-shadow(0 1px 2px #0008); }
+.bus-heading-word { color: #ffb37a; font-weight: 700; }
+/* Keep the direction arrow visible even when it points down over the route-number label */
+.bus-dir { z-index: 3; inset: -15px; }
+.bus-dir::before { border-left-width: 9px; border-right-width: 9px; border-bottom-width: 15px; top: -4px; }
+.live-bus-marker .bus-route-label { z-index: 1; }

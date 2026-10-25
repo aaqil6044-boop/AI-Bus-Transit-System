@@ -293,6 +293,29 @@ def _branch_vehicles(branch: dict, route_number: str) -> dict[str, dict]:
     return found
 
 
+AHEAD_MAX_STOPS = 150   # a whole BMTC run is rarely longer; this only guards against bad data
+
+
+def _heading(branch: dict, index: int | None, until: int | None = None) -> dict | None:
+    """The rest of this bus's run, in BMTC's stop order: from its next stop to the last stop.
+
+    ``until`` (the traveller's boarding stop on this run, when the bus is coming to them) is passed
+    back as ``board_stop_index`` so the page can mark it on the line."""
+    stations = branch.get("stations") or []
+    if index is None or not stations or index >= len(stations) - 1:
+        return None
+    end = min(len(stations) - 1, index + AHEAD_MAX_STOPS)
+    stops = [{"name": s["name"], "lat": s["lat"], "lon": s["lon"]}
+             for s in stations[index + 1:end + 1] if s["lat"] is not None and s["lon"] is not None]
+    if not stops:
+        return None
+    heading = {"stops": stops, "towards": stations[-1]["name"] or None,
+               "remaining_stops": len(stations) - 1 - index, "direction": branch.get("direction")}
+    if until is not None and index < until <= end:
+        heading["board_stop"] = stations[until]["name"]
+    return heading
+
+
 def _classify(item: dict, branch: dict, match: dict) -> dict:
     """Attach relevance to a vehicle; never mark a bus suitable without verification."""
     item["branch"] = branch["direction"]
@@ -300,6 +323,9 @@ def _classify(item: dict, branch: dict, match: dict) -> dict:
     item["board_eta"] = None
     index = item.pop("_index", None)
     etas = item.pop("_etas", None) or {}
+    # Where this bus goes next on its own run. Valid even when the traveller's direction is not
+    # verified: it is simply BMTC's stop order for the run the bus is reported on.
+    item["heading"] = _heading(branch, index)
     if not match.get("verified"):
         item["relevance"] = "unverified"
         item["reason"] = ("Route number matches, but BMTC's stop order could not confirm this bus is heading "
@@ -323,6 +349,7 @@ def _classify(item: dict, branch: dict, match: dict) -> dict:
         item["stops_away"] = board_index - index
         # BMTC's own estimate for THIS bus at the traveller's boarding stop (never computed by us).
         item["board_eta"] = etas.get(board_index) or None
+        item["heading"] = _heading(branch, index, until=board_index)
         item["board_stop"] = own[1][1]["name"]
         item["reason"] = ("Heading toward your boarding stop" if item["stops_away"] else "At your boarding stop") + \
             ("" if item.get("progress_source") == "feed" else " (position along route estimated from its coordinates)")

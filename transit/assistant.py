@@ -33,6 +33,11 @@ _PREFERENCES = (
     ("fewer_transfers", re.compile(r"\b(?:with\s+|and\s+)?(?:fewer|fewest|least|less|minimal|no)\s+(?:transfers?|changes?)\b|\bdirect\b", re.I)),
     ("fastest", re.compile(r"\b(?:the\s+)?(?:fastest|quickest|shortest)(?:\s+(?:route|way|journey))?\b", re.I)),
 )
+_HERE = re.compile(r"\b(?:from\s+)?(?:right\s+)?(?:here|my\s+(?:current\s+)?location|current\s+location|where\s+i\s+am|near\s+me)\b", re.I)
+_LIVE = re.compile(r"\bwhere(?:'s|\s+is)\s+(?:my|the|a)\s+bus\b|\blive\s+(?:bus|buses|position|location|tracking)\b|"
+                   r"\btrack\b|\bbus(?:es)?\s+(?:near|nearby|coming)\b|"
+                   r"\bwhen\s+(?:does|will|is)\b.*\b(?:come|coming|arrive|arriving|reach)\b", re.I)
+_ROUTE_CODE = re.compile(r"\b((?:[A-Z]{1,4}-)?\d{1,3}[A-Z]{0,3}(?:-[A-Z]{1,4})?)\b", re.I)
 _SWAP = re.compile(r"\b(?:swap|reverse|flip|return trip|way back|go back|other direction|opposite direction)\b", re.I)
 
 
@@ -43,7 +48,18 @@ def _clean(text: str) -> str:
 def parse_command(message: str) -> dict:
     """Split a message into places, preference, departure time and swap intent."""
     text = _clean(str(message))
-    parsed = {"origin": None, "destination": None, "preference": None, "depart_at": None, "swap": False}
+    parsed = {"origin": None, "destination": None, "preference": None, "depart_at": None, "swap": False,
+              "from_here": False, "live": False, "route": None}
+    if _LIVE.search(text):
+        # "where is my bus", "when will 500D come": a live-position question, not a journey plan.
+        parsed["live"] = True
+        code = next((m.group(1) for m in _ROUTE_CODE.finditer(text)
+                     if not re.fullmatch(r"\d{1,2}", m.group(1))), None)   # "9" in "at 9" is a time
+        parsed["route"] = code.upper() if code else None
+        return parsed
+    if _HERE.search(text):
+        parsed["from_here"] = True
+        text = _HERE.sub(" ", text)
     if _SWAP.search(text):
         parsed["swap"] = True
         text = _SWAP.sub(" ", text)
@@ -139,7 +155,18 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
             engine = "gemini"
         except gemini.GeminiUnavailable as error:
             notice = error.note
-    if ai and ai["action"] == "reply":
+    live = (ai and ai["action"] == "live") or (ai is None and rules.get("live"))
+    if live:
+        route = (ai or {}).get("route") if ai else rules.get("route")
+        route = gemini.clean_route(route)
+        reply = _reply(f"Checking BMTC live positions for {route}…" if route else
+                       "Checking BMTC live positions for your selected journey…", intent="live",
+                       origin=_context_to_stop(_context_stop(payload.get("origin"))),
+                       destination=_context_to_stop(_context_stop(payload.get("destination"))),
+                       preference=payload.get("preference") if payload.get("preference") in gemini.PREFERENCES else "fastest",
+                       depart_at=payload.get("depart_at") or None)
+        reply["route"] = route
+    elif ai and ai["action"] == "reply":
         reply = _reply(ai["text"], intent="answer",
                        origin=_context_to_stop(_context_stop(payload.get("origin"))),
                        destination=_context_to_stop(_context_stop(payload.get("destination"))),
@@ -148,12 +175,39 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
     else:
         parsed = rules if ai is None else {
             "origin": ai.get("origin"), "destination": ai.get("destination"), "preference": ai.get("preference"),
-            "depart_at": ai.get("depart_at"), "swap": ai["action"] == "swap"}
-        reply = _answer(database, payload, parsed, rules if ai is not None else None, now)
+            "depart_at": ai.get("depart_at"), "swap": ai["action"] == "swap",
+            "from_here": bool(ai.get("from_my_location"))}
+        if parsed.get("from_here"):
+            reply = _from_here(database, payload, parsed, rules if ai is not None else None)
+        else:
+            reply = _answer(database, payload, parsed, rules if ai is not None else None, now)
     reply["engine"] = engine
     if notice:
         reply["notice"] = notice
     return reply
+
+
+def _from_here(database, payload: dict, parsed: dict, rules) -> dict:
+    """Start = the traveller's own position. Only the browser knows it, so resolve the destination
+    here and let the page take a GPS fix and plan (the page never sends GPS to Gemini)."""
+    preference = parsed.get("preference") or payload.get("preference") or "fastest"
+    if preference not in gemini.PREFERENCES:
+        preference = "fastest"
+    depart_at = parsed.get("depart_at") or payload.get("depart_at") or None
+    destination = _context_to_stop(_context_stop(payload.get("destination")))
+    if parsed.get("destination"):
+        stop, _others, suggestions = resolve_place(database, parsed["destination"])
+        if stop is None and rules and rules.get("destination"):
+            stop, _others, more = resolve_place(database, rules["destination"])
+            suggestions = suggestions or more
+        if stop is None:
+            hint = (" Closest names: " + ", ".join(suggestions) + ".") if suggestions else ""
+            return _reply(f"I could not find a BMTC stop called \"{parsed['destination']}\".{hint}", intent="error",
+                          preference=preference, depart_at=depart_at)
+        destination = stop
+    text = ("Using your current location as the start" +
+            (f", going to {destination['stop_name']}." if destination else ". Where do you want to go?"))
+    return _reply(text, intent="use_location", destination=destination, preference=preference, depart_at=depart_at)
 
 
 def _answer(database, payload: dict, parsed: dict, rules, now) -> dict:

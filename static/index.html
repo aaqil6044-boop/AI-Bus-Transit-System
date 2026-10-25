@@ -6,7 +6,7 @@
 
     <title>Bengaluru Transit Assistant</title>
     
-<link rel="stylesheet" href="/static/styles.css?v=20261025-gemini-1">
+<link rel="stylesheet" href="/static/styles.css?v=20261025-direction-1">
 <link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
 </head>
 
@@ -192,6 +192,7 @@
             </div>
 
         </div>
+        <p id="aiStatus" class="ai-status" role="status" aria-live="polite" hidden></p>
 
 
         <button
@@ -344,6 +345,7 @@
                     <button class="quick-chip" type="button" data-preference="less_walking" aria-pressed="false">🚶 Less walking</button>
                     <button class="quick-chip" type="button" data-preference="fewer_transfers" aria-pressed="false">🔄 Fewer transfers</button>
                     <button class="quick-chip" type="button" data-preference="fastest" aria-pressed="false">⚡ Fastest</button>
+                    <button id="explainBtn" class="route-explain-btn" type="button" hidden title="A short Gemini comparison, checked against these options">✦ Explain options</button>
                 </div>
 
             </div>
@@ -439,6 +441,7 @@
         <button id="liveJourneyStart" class="start-journey-button live-journey-start" type="button" hidden>▶ Start selected journey</button>
         <details class="guide-disclaimer"><summary>About these positions</summary>Positions and update times come from BMTC’s feed. A bus is marked “heading to your stop” only when BMTC’s own stop order shows it before your boarding stop in your direction. Old or missing timestamps are labelled STALE or NO TIMESTAMP, never live.</details>
     </section>
+    <button id="showPanelsBtn" class="show-panels-pill" type="button" hidden aria-label="Show the trip panels again">▲ Show trip panels</button>
     <!-- STATUS -->
     <div
         id="statusToast"
@@ -468,7 +471,7 @@
 
 
 <script src="/static/vendor/maplibre-gl.js"></script>
-<script src="/static/app.js?v=20261025-gemini-1"></script>
+<script src="/static/app.js?v=20261025-direction-1"></script>
 </body>
 </html>
 

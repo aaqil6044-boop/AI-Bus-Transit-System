@@ -36,8 +36,13 @@ Java 21 is found automatically (JAVA_HOME, Microsoft/Temurin JDK folders, then P
 - BMTC publishes each route as UP and DOWN branches with ordered stations. A bus is labelled **heading to your stop** only when its branch lists your boarding stop before your alighting stop and the bus has not passed the boarding stop yet.
   Buses already past it, or travelling the other way, are hidden and counted. A matching route number alone is never enough.
 - Anything the feed cannot verify (looping routes, no alighting stop, position far from the line) is labelled **Direction not verified**.
+- Click a bus (marker or list row) to see **where it is going**: a bold orange line from the bus along its route's own roads (timetable path) to the last stop of its run, marked "🏁 … ends at …". Your boarding stop is marked on it when the bus is coming to you, the planned journey fades while it is shown, and the panels slide away so the whole route is visible ("▲ Show trip panels" brings them back). Click the same bus again to hide it. The line starts where the bus actually is, so it never doubles back to a stop already passed. If no timetable path fits, it joins the stops instead, without passed stops and never across a gap longer than about 2 km; a bus whose position along its route BMTC did not publish gets no line, and the app says so.
 - Freshness is shown separately: Fresh (position updated within 2 minutes), Stale (older), No timestamp (not confirmed live).
 - If BMTC cannot be reached, journeys and guidance keep working and the panel says so. This depends on BMTC's unofficial mobile API, which can change or block requests.
+
+## Seeing the whole map
+
+Drag or zoom the map and the panels (search, journey options, live buses, guidance) slide off the edges so the whole map is visible. "▲ Show trip panels" at the bottom, or Esc, brings them back; so does any action that needs them (a new search, Check buses, Start journey, opening the chat). The app's own camera moves never hide anything.
 
 ## Guidance
 
@@ -52,6 +57,13 @@ Start journey opens a step list (walk, board, ride, transfer, arrive). Next/Prev
 
 Either way, places are looked up in the BMTC stop list and journeys come from the same planner as Find routes. Gemini never supplies bus numbers, times, routes or live positions; its word answers are labelled "Gemini AI answer · may be wrong".
 What is sent to Gemini: the typed message, the names of the selected stops, the selected preference/time and up to six recent chat lines. GPS coordinates are never sent. On Google's free tier, Google may use this text to improve its products.
+
+What the chat can do (with Gemini; the built-in helper understands the simpler phrasings too):
+
+- **Plan**: "take me frm whitefeild to majestic, less walking", then follow-ups like "same but at 9 pm" or "the way back".
+- **From here**: "take me to Hoodi from here" uses one GPS reading from the browser as the start (the position goes only to this app's planner, never to Gemini).
+- **Live buses**: "where is my bus?" or "when will KBS-1K come?" runs the normal live check (BMTC feed) and repeats its headline in the chat.
+- **Explain options**: after a search, the "✦ Explain options" button (and Gemini-planned chats) give a two or three sentence comparison. The server rejects any summary that mentions a time, number or bus not in the options shown, so it can only rephrase the real results.
 
 ### Turning Gemini on
 

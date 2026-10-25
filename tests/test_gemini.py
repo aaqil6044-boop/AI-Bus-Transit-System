@@ -197,7 +197,7 @@ class GeminiAssistantTests(unittest.TestCase):
         self.assertEqual([c["role"] for c in body["contents"]], ["user"], "history starts with the traveller and alternates")
         self.assertIn("Sunday 17:40", body["contents"][0]["parts"][0]["text"])
         names = [f["name"] for f in body["tools"][0]["functionDeclarations"]]
-        self.assertEqual(names, ["plan_journey", "swap_trip", "reply"])
+        self.assertEqual(names, ["plan_journey", "check_live_buses", "swap_trip", "reply"])
 
     def test_model_name_is_validated(self):
         with patch.dict(os.environ, {"GEMINI_MODEL": "../../evil?x=1"}):
@@ -236,8 +236,10 @@ class DotenvAndHealthTests(unittest.TestCase):
                     text = response.read().decode()
                 self.assertNotIn("secret-value-xyz", text)
                 with opener.open(base + "/static/app.js", timeout=5) as response:
+                    response.read()
                     self.assertEqual(response.status, 200, "real static files are still served")
                 with opener.open(base + "/", timeout=5) as response:
+                    response.read()
                     self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(text)["assistant"]["engine"], "gemini")
                 for path in ("/.env", "/static/../.env", "/static/%2e%2e/.env", "/static/%2E%2E/%2E%2E/project/.env",
@@ -252,6 +254,124 @@ class DotenvAndHealthTests(unittest.TestCase):
             server.server_close()
             if created:
                 env_file.unlink()
+
+
+class AdvancedFeatureTests(unittest.TestCase):
+    """Live-bus questions, "from here" and the fact-checked explanation."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = make_database([("1", "White Field Post Office", 12.9693, 77.7500),
+                                ("2", "Kempegowda Bus Station", 12.9781, 77.5723)])
+
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"GEMINI_API_KEY": "test-key-123", "GEMINI_MODEL": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def ask(self, message, fake=None, **payload):
+        with patch.object(assistant, "plan_journey", return_value=PLAN) as planner:
+            result = assistant.handle_assistant(self.db, {"message": message, **payload}, now=NOW, gemini_transport=fake)
+        return result, planner
+
+    def test_live_question_from_gemini(self):
+        result, planner = self.ask("is 500d coming?", FakeGemini(data=call("check_live_buses", route="500d")))
+        self.assertEqual((result["intent"], result["route"]), ("live", "500D"))
+        planner.assert_not_called()
+
+    def test_live_question_route_is_sanitised(self):
+        result, _ = self.ask("where is my bus", FakeGemini(data=call("check_live_buses", route="<script>")))
+        self.assertEqual(result["intent"], "live")
+        self.assertIsNone(result["route"], "anything that is not a bus number is dropped")
+
+    def test_live_question_without_gemini(self):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            for message, route in (("where is my bus", None), ("when will KBS-1K come", "KBS-1K"),
+                                   ("when does 500D arrive", "500D")):
+                with self.subTest(message=message):
+                    result, planner = self.ask(message)
+                    self.assertEqual((result["intent"], result["route"]), ("live", route))
+                    planner.assert_not_called()
+
+    def test_from_here_lets_the_page_use_gps_and_resolves_only_the_destination(self):
+        fake = FakeGemini(data=call("plan_journey", destination="Majestic", from_my_location=True))
+        result, planner = self.ask("take me to majestic from here", fake)
+        self.assertEqual(result["intent"], "use_location")
+        self.assertEqual(result["destination"]["stop_name"], "Kempegowda Bus Station")
+        self.assertIsNone(result["origin"])
+        planner.assert_not_called()   # the page plans after it has a GPS fix
+
+    def test_from_here_without_gemini(self):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            result, _ = self.ask("from here to majestic")
+        self.assertEqual(result["intent"], "use_location")
+        self.assertEqual(result["destination"]["stop_name"], "Kempegowda Bus Station")
+
+    def test_from_here_with_unknown_destination(self):
+        fake = FakeGemini(data=call("plan_journey", destination="Atlantis", from_my_location=True))
+        result, _ = self.ask("from here to atlantis", fake)
+        self.assertEqual(result["intent"], "error")
+
+
+ROUTES = [{"route_numbers": ["KBS-1K"], "departure_time": "19:31", "arrival_time": "20:59", "trip_minutes": 89,
+           "transfers": 0, "walking_minutes": 2, "leave_in_minutes": 4, "also_lines": ["333-E", "333-K"]},
+          {"route_numbers": ["328-H", "KSRTC-MULABAGILU-1"], "departure_time": "19:27", "arrival_time": "20:30",
+           "trip_minutes": 63, "transfers": 1, "walking_minutes": 12, "detour": True}]
+
+
+class ExplanationTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"GEMINI_API_KEY": "test-key-123", "GEMINI_MODEL": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_facts_keep_zero_values(self):
+        facts = gemini.facts_from_routes(ROUTES)
+        self.assertEqual(facts[0]["changes"], 0)
+        self.assertTrue(facts[1]["long_way_round"])
+        self.assertNotIn("long_way_round", facts[0])
+
+    def test_grounded_summaries_pass(self):
+        facts = gemini.facts_from_routes(ROUTES)
+        for text in ("Option 1 (KBS-1K) is direct with 0 changes: leave 19:31, arrive 20:59. 333-E and 333-K also go there.",
+                     "Option 2 arrives earlier at 20:30 but goes the long way round, with 1 change and 12 min of walking."):
+            with self.subTest(text=text):
+                self.assertTrue(gemini.explanation_is_grounded(text, facts))
+
+    def test_anything_not_in_the_results_is_rejected(self):
+        facts = gemini.facts_from_routes(ROUTES)
+        for text in ("Take 500D instead.", "Option 1 takes 75 minutes.", "Leave at 19:45 for option 1.",
+                     "The fare is 25 rupees.", "Buses come every 10 minutes.", "Option 3 is best."):
+            with self.subTest(text=text):
+                self.assertFalse(gemini.explanation_is_grounded(text, facts))
+
+    def test_explain_returns_checked_text_or_refuses(self):
+        good = FakeGemini(data=call("explain", text="Option 1 (KBS-1K) is direct; option 2 is quicker but the long way round."))
+        self.assertIn("KBS-1K", gemini.explain(ROUTES, transport=good))
+        bad = FakeGemini(data=call("explain", text="Option 1 KBS-1K comes every 5 minutes."))
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(gemini.GeminiUnavailable) as caught:
+                gemini.explain(ROUTES, transport=bad)
+        self.assertEqual(caught.exception.reason, "ungrounded")
+        sent = json.dumps(good.calls[0]["body"])
+        self.assertIn("KSRTC-MULABAGILU-1", sent)
+        self.assertEqual(good.calls[0]["body"]["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"], ["explain"])
+
+    def test_explain_endpoint_without_key_says_so(self):
+        server = app_module.ThreadingHTTPServer(("127.0.0.1", 0), app_module.TransitHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/api/explain",
+                                                 data=json.dumps({"routes": ROUTES}).encode(), method="POST",
+                                                 headers={"Content-Type": "application/json"})
+                with opener.open(request, timeout=5) as response:
+                    self.assertEqual(json.loads(response.read()), {"ok": False, "reason": "no_key"})
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":
