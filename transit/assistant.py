@@ -94,7 +94,7 @@ def parse_command(message: str) -> dict:
             parsed["origin"] = _clean(text[5:])
     for key in ("origin", "destination"):
         if parsed[key]:
-            parsed[key] = re.sub(r"^(?:(?:the|my|to|from)\s+)+", "", parsed[key], flags=re.I) or None
+            parsed[key] = re.sub(r"^(?:(?:the|my|to|from)(?:\s+|$))+", "", parsed[key], flags=re.I) or None
     return parsed
 
 
