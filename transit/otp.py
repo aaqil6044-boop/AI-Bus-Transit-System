@@ -546,8 +546,9 @@ def plan_journey(database, origin_id, destination_id, profile=None,
 
     plan = search(requested)
     found = build_routes(plan, requested, profile, excluded)
-    if found and len(found) < 4:
-        # Few options: also look a little later so the traveller sees the next buses.
+    if found and len(found) < 2:
+        # Only one usable option: look a little later for a backup. Avoid a second expensive
+        # router search when the first query already produced a useful choice of journeys.
         first_start = min(_leg_start(route) for route in found)
         try:
             later = build_routes(search(first_start + timedelta(minutes=3)), requested, profile, excluded)

@@ -3085,6 +3085,152 @@
         }
     }
 
+    // ---- Side dock: journey steps and live buses share one column (desktop: drag the handle between
+    // them; phone: one bottom sheet with tabs and a pull handle). Fold (▾) and make-big (⤢) per panel.
+    function phoneLayout() { return (window.innerWidth || 1600) <= 760; }
+
+    function setDockTab(tab) {
+        const dock = $("sideDock");
+        if (!dock?.classList) return;
+        dock.classList.toggle("tab-guide", tab === "guide");
+        dock.classList.toggle("tab-live", tab === "live");
+        dock.querySelectorAll?.(".dock-tab").forEach(button => button.setAttribute("aria-selected", String(button.dataset.tab === tab)));
+    }
+
+    function syncDock({ guideOpened = false, liveOpened = false } = {}) {
+        const dock = $("sideDock");
+        if (!dock?.classList) return;
+        const guide = $("journeyGuide"), live = $("liveBusPanel");
+        const guideOn = !!guide && !guide.hidden, liveOn = !!live && !live.hidden;
+        dock.classList.toggle("has-panel", guideOn || liveOn);
+        dock.classList.toggle("both", guideOn && liveOn);
+        if (guideOpened) guide.classList.remove("folded");
+        if (liveOpened) live.classList.remove("folded");
+        // Which tab a phone shows: the panel the traveller just asked for. Live buses opened automatically
+        // by guidance do not steal the screen from the journey steps.
+        if (liveOpened && !state.liveBus.autoForJourney) setDockTab("live");
+        else if (guideOpened || !liveOn) setDockTab("guide");
+        else if (!guideOn) setDockTab("live");
+        else if (!dock.classList.contains("tab-guide") && !dock.classList.contains("tab-live")) setDockTab("guide");
+    }
+
+    function setDockHeight(px) {
+        const dock = $("sideDock");
+        if (!dock?.style) return;
+        if (px === null) dock.style.removeProperty("--dock-h");
+        else dock.style.setProperty("--dock-h", `${Math.round(px)}px`);
+    }
+
+    function dockSnapHeights() {
+        const height = window.innerHeight || 800;
+        return { peek: 190, half: Math.round(height * 0.46), full: Math.round(height - 80) };
+    }
+
+    function setupSideDock() {
+        const dock = $("sideDock");
+        if (!dock?.addEventListener) return;
+        const guide = $("journeyGuide"), live = $("liveBusPanel");
+        // React whenever either panel is shown or hidden, however the rest of the app does it.
+        if (typeof MutationObserver === "function") {
+            const watch = (panel, key) => new MutationObserver(() => syncDock({[key]: !panel.hidden}))
+                .observe(panel, {attributes: true, attributeFilter: ["hidden"]});
+            if (guide) watch(guide, "guideOpened");
+            if (live) watch(live, "liveOpened");
+        }
+        syncDock();
+
+        dock.querySelectorAll(".dock-tab").forEach(button => button.addEventListener("click", () => setDockTab(button.dataset.tab)));
+
+        dock.querySelectorAll(".dock-fold").forEach(button => button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const panel = $(button.dataset.target);
+            if (!panel) return;
+            if (phoneLayout()) {
+                // On a phone, folding means "show me the map": the sheet drops to its peek height.
+                const { peek, half } = dockSnapHeights();
+                const isPeek = dock.style.getPropertyValue("--dock-h") === `${peek}px`;
+                setDockHeight(isPeek ? half : peek);
+                return;
+            }
+            panel.classList.toggle("folded");
+            reframeSelectedRoute();
+        }));
+        dock.querySelectorAll(".dock-max").forEach(button => button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const panel = $(button.dataset.target);
+            const other = panel === guide ? live : guide;
+            if (!panel) return;
+            const already = !panel.classList.contains("folded") && (!other || other.hidden || other.classList.contains("folded"));
+            panel.classList.remove("folded");
+            if (other && !other.hidden) other.classList.toggle("folded", !already);
+        }));
+
+        // Desktop: drag the handle between the panels to share the height.
+        const splitter = $("dockSplitter");
+        if (splitter) {
+            let dragging = false;
+            const move = (clientY) => {
+                const box = dock.getBoundingClientRect();
+                const share = Math.min(85, Math.max(15, ((clientY - box.top) / Math.max(1, box.height)) * 100));
+                dock.style.setProperty("--split", `${share.toFixed(1)}%`);
+            };
+            splitter.addEventListener("pointerdown", (event) => {
+                dragging = true;
+                guide?.classList.remove("folded");
+                live?.classList.remove("folded");
+                dock.classList.add("dragging");
+                splitter.setPointerCapture?.(event.pointerId);
+                event.preventDefault();
+            });
+            splitter.addEventListener("pointermove", (event) => { if (dragging) move(event.clientY); });
+            const end = () => { if (!dragging) return; dragging = false; dock.classList.remove("dragging"); };
+            splitter.addEventListener("pointerup", end);
+            splitter.addEventListener("pointercancel", end);
+            splitter.addEventListener("dblclick", () => dock.style.setProperty("--split", "50%"));
+            splitter.addEventListener("keydown", (event) => {
+                const now = parseFloat(dock.style.getPropertyValue("--split")) || 50;
+                if (event.key === "ArrowUp") dock.style.setProperty("--split", `${Math.max(15, now - 5)}%`);
+                if (event.key === "ArrowDown") dock.style.setProperty("--split", `${Math.min(85, now + 5)}%`);
+            });
+        }
+
+        // Phone: pull the sheet up or down; it snaps to peek, half or full height. A tap cycles sizes.
+        const grip = $("dockGrip");
+        if (grip) {
+            let drag = null;
+            grip.addEventListener("pointerdown", (event) => {
+                drag = { y: event.clientY, start: dock.getBoundingClientRect().height, moved: false };
+                dock.classList.add("dragging");
+                grip.setPointerCapture?.(event.pointerId);
+            });
+            grip.addEventListener("pointermove", (event) => {
+                if (!drag) return;
+                const delta = drag.y - event.clientY;
+                if (Math.abs(delta) > 4) drag.moved = true;
+                if (!drag.moved) return;
+                const { peek, full } = dockSnapHeights();
+                setDockHeight(Math.min(full, Math.max(peek - 40, drag.start + delta)));
+            });
+            const finish = () => {
+                if (!drag) return;
+                const { moved } = drag;
+                drag = null;
+                dock.classList.remove("dragging");
+                const { peek, half, full } = dockSnapHeights();
+                const height = dock.getBoundingClientRect().height;
+                if (!moved) {
+                    // tap: half -> full -> peek -> half
+                    setDockHeight(height < (peek + half) / 2 ? half : height < (half + full) / 2 ? full : peek);
+                    return;
+                }
+                const nearest = [peek, half, full].reduce((best, value) => Math.abs(value - height) < Math.abs(best - height) ? value : best);
+                setDockHeight(nearest);
+            };
+            grip.addEventListener("pointerup", finish);
+            grip.addEventListener("pointercancel", finish);
+        }
+    }
+
     function setupRouteGrip() {
         const grip = $("routeGrip");
         if (!grip?.addEventListener) return;
@@ -3249,6 +3395,7 @@
         $("newJourneyBtn")?.addEventListener("click", resetJourney);
         $("closeRoutesBtn")?.addEventListener("click", () => setRoutesCollapsed(!routePanel.classList.contains("collapsed")));
         $("showPanelsBtn")?.addEventListener("click", exitMapFocus);
+        setupSideDock();
         document.addEventListener?.("keydown", (event) => { if (event.key === "Escape") exitMapFocus(); });
         $("explainBtn")?.addEventListener("click", (event) => {
             event.stopPropagation();

@@ -105,7 +105,7 @@ Gemini is optional. Without a key, journey search and the built-in assistant con
 
 ```dotenv
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_MODEL=gemini-3.1-flash-lite
 ```
 
 3. Restart the application.

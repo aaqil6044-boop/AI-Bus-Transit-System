@@ -29,8 +29,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 API_ROOT = os.environ.get("GEMINI_API_ROOT", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-DEFAULT_MODEL = "gemini-3.5-flash-lite"   # free tier, stable, supports function calling
-TIMEOUT_SECONDS = 8
+DEFAULT_MODEL = "gemini-3.1-flash-lite"   # free tier, fast, supports function calling
+TIMEOUT_SECONDS = 35
 IST = timezone(timedelta(hours=5, minutes=30))
 PREFERENCES = ("fastest", "less_walking", "fewer_transfers")
 
@@ -202,6 +202,7 @@ def build_request(message: str, *, origin_name=None, destination_name=None, pref
     return {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": contents,
+        "generationConfig": {"thinkingConfig": {"thinkingLevel": "MINIMAL"}, "maxOutputTokens": 512},
         "tools": TOOLS,
         "toolConfig": {"functionCallingConfig": {"mode": "ANY",
                                                  "allowedFunctionNames": ["plan_journey", "swap_trip",
@@ -400,6 +401,7 @@ def explain(routes, *, preference=None, transport=None, timeout: float = TIMEOUT
         "contents": [{"role": "user", "parts": [{"text":
             f"Ranking preference: {preference if preference in PREFERENCES else 'fastest'}.\n"
             f"Options (facts): {json.dumps(facts, ensure_ascii=False)}"}]}],
+        "generationConfig": {"thinkingConfig": {"thinkingLevel": "MINIMAL"}, "maxOutputTokens": 512},
         "tools": [{"functionDeclarations": [{
             "name": "explain", "description": "The short explanation for the traveller.",
             "parameters": {"type": "object", "properties": {

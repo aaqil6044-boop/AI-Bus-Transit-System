@@ -2407,3 +2407,84 @@ body.map-focus #journeyGuide, body.map-focus .brand { animation: none !important
 .bus-dir { z-index: 3; inset: -15px; }
 .bus-dir::before { border-left-width: 9px; border-right-width: 9px; border-bottom-width: 15px; top: -4px; }
 .live-bus-marker .bus-route-label { z-index: 1; }
+
+/* ===================== Side dock: journey steps + live buses share one resizable column ===================== */
+#sideDock { position: fixed; right: 22px; top: 106px; bottom: 24px; width: min(488px, calc(100vw - 44px));
+    display: flex; flex-direction: column; z-index: 30; pointer-events: none; --split: 50%; }
+#sideDock:not(.has-panel) { display: none; }
+/* Panels inside the dock are laid out by the dock, not by their old fixed positions. */
+#sideDock > #journeyGuide, #sideDock > #liveBusPanel {
+    position: relative !important; inset: auto !important; top: auto !important; bottom: auto !important;
+    left: auto !important; right: auto !important; width: auto !important; max-height: none !important;
+    margin: 0 !important; min-height: 0; overflow-y: auto; overscroll-behavior: contain; pointer-events: auto;
+    flex: 0 1 auto; transition: flex-basis .35s cubic-bezier(.2, .8, .2, 1), transform .42s cubic-bezier(.2, .8, .2, 1), opacity .32s ease; }
+#sideDock > section[hidden] { display: none !important; }
+#sideDock.both > #journeyGuide { flex: 0 0 var(--split); }
+#sideDock.both > #liveBusPanel { flex: 1 1 0; }
+#sideDock.both > #journeyGuide.folded { flex: 0 0 auto; }
+#sideDock.both > #journeyGuide.folded ~ #liveBusPanel { flex: 1 1 0; }
+#sideDock.both > #liveBusPanel.folded { flex: 0 0 auto; }
+#sideDock.both:has(> #liveBusPanel.folded) > #journeyGuide:not(.folded) { flex: 1 1 0; }
+#sideDock.dragging > section { transition: none !important; }
+
+/* Header row with fold / maximise buttons; stays visible while the panel scrolls. */
+.dock-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#journeyGuide > .dock-head { position: sticky; top: -27px; margin: -27px -27px 6px; padding: 18px 27px 8px; z-index: 3;
+    background: rgb(20, 33, 46); border-radius: inherit; }
+.dock-panel-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.dock-panel-actions button { min-width: 38px; min-height: 34px; border-radius: 10px; border: 1px solid #456075;
+    background: #243746; color: #e8f4ff; font-size: 16px; cursor: pointer; transition: background .2s, transform .25s; }
+.dock-panel-actions button:hover { background: #2f4a5e; }
+section.folded .dock-fold { transform: rotate(-90deg); }
+
+/* Folded: only the header and the one-line summary stay. */
+#journeyGuide.folded > :not(.dock-head):not(#guideTitle) { display: none !important; }
+#journeyGuide.folded #guideTitle { margin: 0; font-size: 1.05rem; }
+#liveBusPanel.folded > :not(.live-head) { display: none !important; }
+#liveBusPanel.folded .live-head > :not(.dock-head):not(#liveBusStatus) { display: none !important; }
+#liveBusPanel.folded .live-head { position: static; margin-bottom: 0; border-bottom: 0; }
+#liveBusPanel.folded #liveBusStatus { font-size: 1.02rem; margin: 2px 0 0; }
+
+/* Drag handle between the two panels (desktop / tablet). */
+.dock-splitter { display: none; flex: 0 0 18px; align-items: center; justify-content: center; cursor: row-resize;
+    pointer-events: auto; touch-action: none; }
+#sideDock.both .dock-splitter { display: flex; }
+.dock-splitter span { width: 64px; height: 6px; border-radius: 99px; background: #5d7a8f; box-shadow: 0 1px 4px #0006; transition: background .2s, width .2s; }
+.dock-splitter:hover span, .dock-splitter:focus-visible span, #sideDock.dragging .dock-splitter span { background: #9fe3c4; width: 92px; }
+.dock-splitter:focus-visible { outline: none; }
+
+/* Phone-only parts are hidden on larger screens. */
+.dock-grip, .dock-tabs { display: none; }
+
+/* Slide away with the rest when the traveller moves the map. */
+body.map-focus #sideDock .dock-splitter { opacity: 0; pointer-events: none; }
+
+/* ---------- Phones: one bottom sheet, tabs, pull handle ---------- */
+@media (max-width: 760px) {
+    #sideDock { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; height: var(--dock-h, 46dvh);
+        max-height: calc(100dvh - 70px); background: rgb(20, 33, 46); border: 1px solid rgba(114, 149, 170, .35);
+        border-radius: 22px; box-shadow: 0 -10px 34px #0009; pointer-events: auto; overflow: hidden;
+        transition: height .38s cubic-bezier(.2, .8, .2, 1), transform .42s cubic-bezier(.2, .8, .2, 1), opacity .3s; }
+    #sideDock.dragging { transition: none; }
+    .dock-grip { display: grid; place-items: center; flex: 0 0 26px; width: 100%; border: 0; background: transparent;
+        cursor: ns-resize; touch-action: none; padding: 0; }
+    .dock-grip span { width: 52px; height: 5px; border-radius: 99px; background: #6f8ea3; }
+    #sideDock.both .dock-tabs { display: flex; gap: 6px; padding: 0 12px 8px; flex: 0 0 auto; }
+    .dock-tab { flex: 1; min-height: 40px; border-radius: 12px; border: 1px solid #456075; background: #1b2c3a;
+        color: #cfe0ef; font: 600 14px system-ui; }
+    .dock-tab[aria-selected="true"] { background: #2b6b57; border-color: #4fd1a1; color: #fff; }
+    #sideDock > #journeyGuide, #sideDock > #liveBusPanel { flex: 1 1 auto !important; border: 0 !important;
+        border-radius: 0 !important; box-shadow: none !important; background: transparent !important; padding-top: 4px !important; }
+    #sideDock.both.tab-guide > #liveBusPanel, #sideDock.both.tab-live > #journeyGuide { display: none !important; }
+    #sideDock .dock-splitter { display: none !important; }
+    #sideDock .dock-max { display: none; }
+    #journeyGuide > .dock-head, #liveBusPanel .live-head { background: rgb(20, 33, 46); }
+    body.map-focus #sideDock { transform: translateY(calc(100% + 30px)); opacity: 0; pointer-events: none; }
+    body.map-focus #sideDock > section { transform: none !important; }
+}
+@media (prefers-reduced-motion: reduce) { #sideDock, #sideDock > section { transition: none !important; } }
+#sideDock > #journeyGuide, #sideDock > #liveBusPanel { --gp: 27px; --live-pad: var(--gp); padding: var(--gp) !important; }
+#journeyGuide > .dock-head { top: calc(-1 * var(--gp)); margin: calc(-1 * var(--gp)) calc(-1 * var(--gp)) 6px; padding: 16px var(--gp) 8px; }
+@media (max-width: 760px) {
+    #sideDock > #journeyGuide, #sideDock > #liveBusPanel { --gp: 16px; }
+}

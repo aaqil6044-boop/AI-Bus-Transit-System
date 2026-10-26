@@ -140,8 +140,24 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
     if len(message) > 300:
         raise ValueError("Please keep the command under 300 characters.")
     rules = parse_command(message)
+
+    # Keep the chat feeling immediate. Greetings and commands the deterministic parser fully
+    # understands do not need a network round-trip to Gemini. Gemini remains available for
+    # ambiguous wording, landmarks, typos, translations and conversational follow-ups.
+    if re.fullmatch(r"(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[.! ]*", message, re.I):
+        result = _reply("Hi! Tell me your starting point and destination, and I’ll find the best BMTC journey.",
+                        intent="answer", origin=_context_to_stop(_context_stop(payload.get("origin"))),
+                        destination=_context_to_stop(_context_stop(payload.get("destination"))),
+                        preference=payload.get("preference") if payload.get("preference") in gemini.PREFERENCES else "fastest",
+                        depart_at=payload.get("depart_at") or None)
+        result["engine"] = "instant"
+        return result
+    place_terms = [rules.get(key) for key in ("origin", "destination") if rules.get(key)]
+    places_understood = bool(place_terms) and all(resolve_place(database, term)[0] for term in place_terms)
+    locally_understood = places_understood or any((rules.get("preference"), rules.get("depart_at"),
+                                                   rules.get("swap"), rules.get("from_here"), rules.get("live")))
     engine, notice, ai = "built-in", "", None
-    if gemini.settings()["enabled"]:
+    if gemini.settings()["enabled"] and (gemini_transport is not None or not locally_understood):
         origin_now = _context_to_stop(_context_stop(payload.get("origin")))
         destination_now = _context_to_stop(_context_stop(payload.get("destination")))
         try:

@@ -23,7 +23,7 @@ sudo ln -sfn /etc/nginx/sites-available/bengaluru-transit /etc/nginx/sites-enabl
 sudo rm -f /etc/nginx/sites-enabled/default
 
 if [[ ! -e /etc/bengaluru-transit.env ]]; then
-  printf '%s\n' '# GEMINI_API_KEY=' 'GEMINI_MODEL=gemini-3.5-flash-lite' | sudo tee /etc/bengaluru-transit.env >/dev/null
+  printf '%s\n' '# GEMINI_API_KEY=' 'GEMINI_MODEL=gemini-3.1-flash-lite' | sudo tee /etc/bengaluru-transit.env >/dev/null
 fi
 sudo chown root:root /etc/bengaluru-transit.env
 sudo chmod 0600 /etc/bengaluru-transit.env

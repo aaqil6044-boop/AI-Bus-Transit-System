@@ -6,7 +6,7 @@
 
     <title>Bengaluru Transit Assistant</title>
     
-<link rel="stylesheet" href="/static/styles.css?v=20261025-direction-1">
+<link rel="stylesheet" href="/static/styles.css?v=20261026-dock-1">
 <link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
 </head>
 
@@ -410,8 +410,14 @@
         <h2>Explore the bus network</h2>
         <div id="networkResults"></div>
     </section>
+    <div id="sideDock" class="side-dock">
+    <button id="dockGrip" class="dock-grip" type="button" aria-label="Resize: drag up or down, or press to change size"><span></span></button>
+    <div class="dock-tabs" role="tablist" aria-label="Journey panels">
+        <button type="button" role="tab" class="dock-tab" data-tab="guide" aria-selected="true">🧭 Journey steps</button>
+        <button type="button" role="tab" class="dock-tab" data-tab="live" aria-selected="false">🚌 Live buses</button>
+    </div>
     <section id="journeyGuide" class="journey-guide" hidden aria-label="Journey guidance">
-        <div class="eyebrow">YOUR JOURNEY · DEVICE GPS</div>
+        <div class="dock-head"><div class="eyebrow">YOUR JOURNEY · DEVICE GPS</div><div class="dock-panel-actions"><button type="button" class="dock-fold" data-target="journeyGuide" aria-label="Fold this panel" title="Fold / unfold">▾</button><button type="button" class="dock-max" data-target="journeyGuide" aria-label="Give this panel the most room" title="Make this panel big">⤢</button></div></div>
         <h2 id="guideTitle"></h2>
         <p id="guideDetail"></p>
         <p id="guideGps" role="status" aria-live="polite">Waiting for your location…</p>
@@ -425,9 +431,11 @@
         <div id="guideRouteSummary" class="guide-route-summary"></div>
         <p class="guide-disclaimer">Journey times come from the BMTC timetable. Bus markers appear only when BMTC publishes a current position for a bus heading your way. Confirm boarding and transfers yourself.</p>
     </section>
+    <div id="dockSplitter" class="dock-splitter" role="separator" aria-orientation="horizontal" tabindex="0"
+         aria-label="Drag to share space between journey steps and live buses (double-click to reset)"><span></span></div>
     <section id="liveBusPanel" class="journey-guide live-bus-panel" hidden aria-label="BMTC live buses">
         <div class="live-head">
-        <div class="eyebrow">BMTC LIVE VEHICLES</div>
+        <div class="dock-head"><div class="eyebrow">BMTC LIVE VEHICLES</div><div class="dock-panel-actions"><button type="button" class="dock-fold" data-target="liveBusPanel" aria-label="Fold this panel" title="Fold / unfold">▾</button><button type="button" class="dock-max" data-target="liveBusPanel" aria-label="Give this panel the most room" title="Make this panel big">⤢</button></div></div>
         <h2 id="liveBusTitle">Route buses</h2>
         <p id="liveBusStatus" class="live-headline" role="status" aria-live="polite">Connecting to BMTC…</p>
         <p id="liveBusMeta" class="live-meta"></p>
@@ -441,6 +449,7 @@
         <button id="liveJourneyStart" class="start-journey-button live-journey-start" type="button" hidden>▶ Start selected journey</button>
         <details class="guide-disclaimer"><summary>About these positions</summary>Positions and update times come from BMTC’s feed. A bus is marked “heading to your stop” only when BMTC’s own stop order shows it before your boarding stop in your direction. Old or missing timestamps are labelled STALE or NO TIMESTAMP, never live.</details>
     </section>
+    </div>
     <button id="showPanelsBtn" class="show-panels-pill" type="button" hidden aria-label="Show the trip panels again">▲ Show trip panels</button>
     <!-- STATUS -->
     <div
@@ -471,7 +480,7 @@
 
 
 <script src="/static/vendor/maplibre-gl.js"></script>
-<script src="/static/app.js?v=20261025-direction-1"></script>
+<script src="/static/app.js?v=20261026-dock-1"></script>
 </body>
 </html>
 

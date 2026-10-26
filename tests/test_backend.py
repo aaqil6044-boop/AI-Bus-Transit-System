@@ -565,7 +565,8 @@ class HttpContractTests(unittest.TestCase):
         status, kind, payload = self.request("/api/assistant", {"message": "hello"})
         data = json.loads(payload)
         self.assertEqual(status, 200)
-        self.assertEqual(data["intent"], "help")
+        self.assertEqual(data["intent"], "answer")
+        self.assertEqual(data["engine"], "instant")
         status, _, payload = self.request("/api/assistant", {"message": "from Nowhereville to Hope Farm"})
         self.assertFalse(json.loads(payload)["ok"])
 

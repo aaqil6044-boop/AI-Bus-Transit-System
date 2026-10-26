@@ -69,7 +69,7 @@ class GeminiAssistantTests(unittest.TestCase):
         args = planner.call_args[0]
         self.assertEqual((args[1], args[2]), ("1", "2"), "places resolved to real BMTC stop ids")
         self.assertEqual(args[3], {"preference": "less_walking", "depart_at": "21:30"})
-        self.assertEqual(fake.calls[0]["url"].rsplit("/", 1)[-1], "gemini-3.5-flash-lite:generateContent")
+        self.assertEqual(fake.calls[0]["url"].rsplit("/", 1)[-1], "gemini-3.1-flash-lite:generateContent")
 
     def test_place_gemini_invents_is_never_planned(self):
         fake = FakeGemini(data=call("plan_journey", origin="Atlantis Bus Stand", destination="Hoodi",
@@ -196,6 +196,8 @@ class GeminiAssistantTests(unittest.TestCase):
         self.assertEqual(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY")
         self.assertEqual([c["role"] for c in body["contents"]], ["user"], "history starts with the traveller and alternates")
         self.assertIn("Sunday 17:40", body["contents"][0]["parts"][0]["text"])
+        self.assertEqual(body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "MINIMAL")
+        self.assertEqual(body["generationConfig"]["maxOutputTokens"], 512)
         names = [f["name"] for f in body["tools"][0]["functionDeclarations"]]
         self.assertEqual(names, ["plan_journey", "check_live_buses", "swap_trip", "reply"])
 

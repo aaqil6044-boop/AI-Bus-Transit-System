@@ -44,6 +44,10 @@ Java 21 is found automatically (JAVA_HOME, Microsoft/Temurin JDK folders, then P
 
 Drag or zoom the map and the panels (search, journey options, live buses, guidance) slide off the edges so the whole map is visible. "▲ Show trip panels" at the bottom, or Esc, brings them back; so does any action that needs them (a new search, Check buses, Start journey, opening the chat). The app's own camera moves never hide anything.
 
+## Journey steps and live buses side by side
+
+While guiding (and whenever live buses are shown) the two panels share one column on the right. Drag the handle between them to give either more room (double-click resets it); ▾ folds a panel to its one-line summary and ⤢ gives it the whole column. On a phone they become one bottom sheet with "Journey steps" and "Live buses" tabs: pull the handle up or down (it snaps to peek, half and full height) or tap it to cycle sizes.
+
 ## Guidance
 
 Start journey opens a step list (walk, board, ride, transfer, arrive). Next/Previous are your own confirmations; the app never infers that you boarded or arrived. GPS, when allowed, adds distance hints only if accuracy is within 50 m and the fix is under 30 s old. Stop, New, a new search or choosing another route clears guidance, live panels and markers.
@@ -52,7 +56,7 @@ Start journey opens a step list (walk, board, ride, transfer, arrive). Next/Prev
 
 `POST /api/assistant` understands typed or spoken requests in two ways:
 
-- **Gemini (optional).** When a `GEMINI_API_KEY` is set, Google Gemini reads the message (typos, landmarks, other languages, follow-ups such as "same but at 9 pm" or "the way back") and turns it into one action: plan a journey, swap the trip, or reply in a sentence. Default model: `gemini-3.5-flash-lite` (free tier).
+- **Gemini (optional).** When a `GEMINI_API_KEY` is set, Google Gemini reads the message (typos, landmarks, other languages, follow-ups such as "same but at 9 pm" or "the way back") and turns it into one action: plan a journey, swap the trip, or reply in a sentence. Default model: `gemini-3.1-flash-lite` (free tier).
 - **Built-in helper (always available).** A rule-based parser for "from Hope Farm to Majestic", "less walking", "leave at 9:30 pm", "swap". It answers whenever Gemini is off, slow, out of free quota or rejects the key, and the chat says so.
 
 Either way, places are looked up in the BMTC stop list and journeys come from the same planner as Find routes. Gemini never supplies bus numbers, times, routes or live positions; its word answers are labelled "Gemini AI answer · may be wrong".

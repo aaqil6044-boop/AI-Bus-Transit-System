@@ -38,7 +38,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync('static/app.js', 'utf8').replace('\n    init();',
-    '\n    globalThis.t = {state, refreshLiveBuses, stopLiveBusTracking, trackBmtcRoute, trackSearchBuses, startJourney, stopJourneyTracking, goToGuideStep, guideSteps, routeLiveScope, liveKey, applyAssistantResult, busFreshness, setRoutesCollapsed, showRoutePanel, mapPadding, planJourney, swapEndpoints, resolveTypedEndpoints, routeAlternates, routeDetourNote, routeLiveScope, liveKey, parseBmtcTime, boardEtaMinutes, setRoutesExpanded, setRoutesCollapsed, showBusHeading, clearBusHeading, busBearing, compassWord, directionChevrons};'), context);
+    '\n    globalThis.t = {state, refreshLiveBuses, stopLiveBusTracking, trackBmtcRoute, trackSearchBuses, startJourney, stopJourneyTracking, goToGuideStep, guideSteps, routeLiveScope, liveKey, applyAssistantResult, busFreshness, setRoutesCollapsed, showRoutePanel, mapPadding, planJourney, swapEndpoints, resolveTypedEndpoints, routeAlternates, routeDetourNote, routeLiveScope, liveKey, parseBmtcTime, boardEtaMinutes, setRoutesExpanded, setRoutesCollapsed, showBusHeading, clearBusHeading, busBearing, compassWord, directionChevrons, syncDock, setDockTab};'), context);
 const T = context.t;
 const { state } = T;
 const camera = [];
@@ -240,6 +240,31 @@ const answer = (vehicles, hidden = []) => ({ ok: true, json: async () => ({ avai
     await new Promise(r => setTimeout(r, 30));
     assert.match(elements.get('liveBusList').innerHTML, /➤ Heading north · towards Terminus/);
     T.stopLiveBusTracking();
+
+    // side dock: journey steps + live buses share space; phones show tabs
+    const dock = elements.get('sideDock') || context.document.getElementById('sideDock');
+    const guideEl = context.document.getElementById('journeyGuide'), liveEl = context.document.getElementById('liveBusPanel');
+    guideEl.hidden = false; liveEl.hidden = true;
+    T.syncDock({ guideOpened: true });
+    assert.ok(dock.classList.contains('has-panel') && !dock.classList.contains('both'));
+    assert.ok(dock.classList.contains('tab-guide'));
+    liveEl.hidden = false; liveEl.classList.add('folded');
+    state.liveBus.autoForJourney = true;
+    T.syncDock({ liveOpened: true });
+    assert.ok(dock.classList.contains('both'));
+    assert.ok(dock.classList.contains('tab-guide'), 'live buses opened by guidance do not take over the phone screen');
+    assert.ok(!liveEl.classList.contains('folded'), 'a panel that opens is never folded');
+    state.liveBus.autoForJourney = false;
+    T.syncDock({ liveOpened: true });
+    assert.ok(dock.classList.contains('tab-live'), 'Check buses brings the live tab forward');
+    guideEl.hidden = true; liveEl.hidden = true;
+    T.syncDock();
+    assert.ok(!dock.classList.contains('has-panel'), 'empty dock is hidden');
+    const dockCss = fs.readFileSync('static/styles.css', 'utf8');
+    assert.match(dockCss, /#sideDock\.both > #journeyGuide \{ flex: 0 0 var\(--split\); \}/, 'drag handle shares the column');
+    assert.match(dockCss, /#sideDock \{ left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; height: var\(--dock-h, 46dvh\);/, 'phone bottom sheet');
+    const dockHtml = fs.readFileSync('static/index.html', 'utf8');
+    assert.ok(dockHtml.indexOf('id="sideDock"') < dockHtml.indexOf('id="journeyGuide"') && dockHtml.indexOf('id="dockSplitter"') < dockHtml.indexOf('id="liveBusPanel"'));
 
     // journey options panel: standard / expanded / folded
     const panel = elements.get('routePanel');

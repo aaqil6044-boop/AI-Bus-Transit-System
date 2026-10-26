@@ -98,6 +98,8 @@ No additional Azure resource will be provisioned. Successful creation of the exi
 
 Validated: 2026-10-25 (Asia/Calcutta)
 
+Revalidated: 2026-10-26 (Asia/Calcutta) after the journey-dock UI, assistant latency, Gemini request, and OTP query changes.
+
 | Check | Result |
 |-------|--------|
 | `python -m unittest discover -s tests -p "test_*.py"` | PASS — 93 tests |
@@ -111,6 +113,8 @@ Validated: 2026-10-25 (Asia/Calcutta)
 | Runtime assets | PASS — database, OTP graph and OTP JAR present locally |
 | Static RBAC review | Not applicable — no managed identities or Azure data-plane services |
 | Infrastructure template/policy validation | Not applicable — approved target is an existing VM; no Azure resources are provisioned |
+
+The 2026-10-26 revalidation repeated the complete 93-test Python suite, all four Node regression suites, JavaScript syntax checking, Python byte-compilation, and `git diff --check`; every check passed.
 
 ## 8. Security and Cost Controls
 
