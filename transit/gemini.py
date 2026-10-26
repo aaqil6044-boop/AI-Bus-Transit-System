@@ -24,13 +24,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 API_ROOT = os.environ.get("GEMINI_API_ROOT", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
 DEFAULT_MODEL = "gemini-3.1-flash-lite"   # free tier, fast, supports function calling
-TIMEOUT_SECONDS = 35
+DEFAULT_FALLBACK_MODELS = ("gemini-3.5-flash-lite",)
+TIMEOUT_SECONDS = 12
+TRANSIENT_STATUSES = (408, 429, 500, 502, 503, 504)
 IST = timezone(timedelta(hours=5, minutes=30))
 PREFERENCES = ("fastest", "less_walking", "fewer_transfers")
 
@@ -123,6 +126,17 @@ def status() -> dict:
             "model": config["model"] if config["enabled"] else None}
 
 
+def _model_candidates(primary: str) -> list[str]:
+    configured = os.environ.get("GEMINI_FALLBACK_MODELS", "").strip()
+    fallbacks = configured.split(",") if configured else DEFAULT_FALLBACK_MODELS
+    models = [primary]
+    for value in fallbacks:
+        model = str(value).strip()
+        if re.fullmatch(r"[A-Za-z0-9.\-_]{1,80}", model) and model not in models:
+            models.append(model)
+    return models
+
+
 def _post(url: str, body: dict, key: str, timeout: float):
     request = Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
                       headers={"Content-Type": "application/json", "x-goog-api-key": key})
@@ -135,6 +149,33 @@ def _post(url: str, body: dict, key: str, timeout: float):
         except (ValueError, OSError):
             detail = {}
         return error.code, detail
+
+
+def _generate(body: dict, config: dict, transport, timeout: float):
+    """Call Gemini with bounded backoff and a stable-model fallback for transient failures."""
+    requester = transport or _post
+    models = _model_candidates(config["model"])
+    last_status, last_data, last_model, last_error = 503, {}, config["model"], None
+    for model_index, model in enumerate(models):
+        attempts = 2 if model_index == 0 else 1
+        url = f"{API_ROOT}/models/{model}:generateContent"
+        for attempt in range(attempts):
+            try:
+                status_code, data = requester(url, body, config["key"], timeout)
+                last_status, last_data, last_model, last_error = status_code, data, model, None
+            except (TimeoutError, OSError, URLError) as error:
+                last_status, last_data, last_model, last_error = 504, {}, model, error
+            except ValueError as error:
+                return 200, {}, model, error
+            if last_status not in TRANSIENT_STATUSES:
+                return last_status, last_data, model, last_error
+            more_attempts = attempt + 1 < attempts or model_index + 1 < len(models)
+            if more_attempts:
+                next_step = "retrying" if attempt + 1 < attempts else "trying fallback model"
+                _log(f"HTTP {last_status} from model {model}; {next_step}", config["key"])
+                if transport is None:
+                    time.sleep(0.4 * (2 ** attempt))
+    return last_status, last_data, last_model, last_error
 
 
 def _log(message: str, key: str = "") -> None:
@@ -253,28 +294,25 @@ def understand(message: str, *, transport=None, timeout: float = TIMEOUT_SECONDS
     config = settings()
     if not config["enabled"]:
         raise GeminiUnavailable("no_key")
-    url = f"{API_ROOT}/models/{config['model']}:generateContent"
     body = build_request(message, **context)
-    try:
-        status_code, data = (transport or _post)(url, body, config["key"], timeout)
-    except (TimeoutError, OSError, URLError) as error:
-        reason = "timeout" if "timed out" in str(error).lower() or isinstance(error, TimeoutError) else "network"
-        _log(f"{reason}: {type(error).__name__}: {error}", config["key"])
-        raise GeminiUnavailable(reason) from None
-    except ValueError:
+    status_code, data, used_model, request_error = _generate(body, config, transport, timeout)
+    if isinstance(request_error, ValueError):
         raise GeminiUnavailable("bad_response") from None
+    if request_error is not None:
+        reason = "timeout" if isinstance(request_error, TimeoutError) or "timed out" in str(request_error).lower() else "network"
+        _log(f"{reason}: {type(request_error).__name__}: {request_error}", config["key"])
+        raise GeminiUnavailable(reason) from None
     if status_code == 400 and "API_KEY" not in json.dumps(data) and "toolConfig" in body:
         # Some models reject the forced function-call setting; retry once with the plain request.
-        _log(f"HTTP 400 from model {config['model']}: {_error_text(data) or 'no error message'} (retrying without toolConfig)",
+        _log(f"HTTP 400 from model {used_model}: {_error_text(data) or 'no error message'} (retrying without toolConfig)",
              config["key"])
         body = {name: value for name, value in body.items() if name != "toolConfig"}
-        try:
-            status_code, data = (transport or _post)(url, body, config["key"], timeout)
-        except (TimeoutError, OSError, URLError, ValueError) as error:
-            _log(f"retry failed: {type(error).__name__}: {error}", config["key"])
+        status_code, data, used_model, request_error = _generate(body, config, transport, timeout)
+        if request_error is not None:
+            _log(f"retry failed: {type(request_error).__name__}: {request_error}", config["key"])
             raise GeminiUnavailable("network") from None
     if status_code != 200:
-        _log(f"HTTP {status_code} from model {config['model']}: {_error_text(data) or 'no error message'}", config["key"])
+        _log(f"HTTP {status_code} from model {used_model}: {_error_text(data) or 'no error message'}", config["key"])
     if status_code == 429:
         raise GeminiUnavailable("rate_limited")
     if status_code in (401, 403) or (status_code == 400 and "API_KEY" in json.dumps(data)):
@@ -408,14 +446,12 @@ def explain(routes, *, preference=None, transport=None, timeout: float = TIMEOUT
                 "text": {"type": "string", "description": "At most three short sentences."}}, "required": ["text"]}}]}],
         "toolConfig": {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": ["explain"]}},
     }
-    url = f"{API_ROOT}/models/{config['model']}:generateContent"
-    try:
-        status_code, data = (transport or _post)(url, body, config["key"], timeout)
-    except (TimeoutError, OSError, URLError, ValueError) as error:
-        _log(f"explain failed: {type(error).__name__}: {error}", config["key"])
+    status_code, data, used_model, request_error = _generate(body, config, transport, timeout)
+    if request_error is not None:
+        _log(f"explain failed: {type(request_error).__name__}: {request_error}", config["key"])
         raise GeminiUnavailable("network") from None
     if status_code != 200:
-        _log(f"explain: HTTP {status_code}: {_error_text(data) or 'no error message'}", config["key"])
+        _log(f"explain: HTTP {status_code} from {used_model}: {_error_text(data) or 'no error message'}", config["key"])
         raise GeminiUnavailable("rate_limited" if status_code == 429 else "bad_request")
     candidate = ((data or {}).get("candidates") or [{}])[0]
     call = next((part.get("functionCall") for part in (candidate.get("content") or {}).get("parts") or []

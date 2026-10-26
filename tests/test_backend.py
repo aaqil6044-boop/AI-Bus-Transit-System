@@ -259,6 +259,7 @@ class AssistantParsingTests(unittest.TestCase):
         self.assertEqual(assistant.parse_command("Hope Farm to Majestic")["destination"], "Majestic")
         parsed = assistant.parse_command("go to Majestic from Hope Farm")
         self.assertEqual((parsed["origin"], parsed["destination"]), ("Hope Farm", "Majestic"))
+        self.assertEqual(assistant.parse_command("go to to Whitefield")["destination"], "Whitefield")
 
     def test_preference_and_time(self):
         parsed = assistant.parse_command("from Hope Farm to Majestic with less walking, leave at 9:30 pm")

@@ -174,6 +174,19 @@ class GeminiAssistantTests(unittest.TestCase):
         self.assertNotIn("toolConfig", sent[1])
         self.assertEqual((result["engine"], result["intent"]), ("gemini", "plan"))
 
+    def test_transient_overload_retries_then_uses_fallback_model(self):
+        calls = []
+        def fake(url, body, key, timeout):
+            calls.append(url)
+            if "gemini-3.1-flash-lite" in url:
+                return 503, {"error": {"status": "UNAVAILABLE"}}
+            return 200, call("reply", text="Ready to help.", kind="smalltalk")
+        result, planner = self.ask("can you help me?", fake)
+        self.assertEqual((result["engine"], result["reply"]), ("gemini", "Ready to help."))
+        self.assertEqual(sum("gemini-3.1-flash-lite" in url for url in calls), 2)
+        self.assertIn("gemini-3.5-flash-lite", calls[-1])
+        planner.assert_not_called()
+
     def test_request_schema_avoids_shapes_the_api_rejects(self):
         for function in gemini.TOOLS[0]["functionDeclarations"]:
             parameters = function.get("parameters")
