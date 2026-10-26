@@ -244,6 +244,10 @@ class StopSearchTests(unittest.TestCase):
         self.assertEqual(self.names("Majestic")[0], "Kempegowda Bus Station")
         self.assertEqual(self.names("yeshwanthpur"), ["Yeshawanthapura"])
 
+    def test_high_confidence_typo_correction(self):
+        self.assertEqual(self.names("amjestic")[0], "Kempegowda Bus Station")
+        self.assertIn("White Field Bus Station (Vydehi Hospital)", self.names("whiefield"))
+
     def test_no_match_and_empty_query(self):
         self.assertEqual(self.names("zzzzz"), [])
         self.assertTrue(self.names(""))
@@ -277,7 +281,11 @@ class AssistantParsingTests(unittest.TestCase):
 class AssistantFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.db = make_database([("1", "Hope Farm", 12.984, 77.752), ("2", "Kempegowda Bus Station", 12.977, 77.571)])
+        cls.db = make_database([
+            ("1", "Hope Farm", 12.984, 77.752),
+            ("2", "Kempegowda Bus Station", 12.977, 77.571),
+            ("3", "White Field Post Office", 12.969, 77.750),
+        ])
 
     def test_unknown_place_is_reported_not_invented(self):
         result = assistant.handle_assistant(self.db, {"message": "from Atlantis to Hope Farm"})
@@ -311,6 +319,22 @@ class AssistantFlowTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["origin"]["stop_name"], "Hope Farm")
         self.assertIn("route engine is not running", result["reply"])
+
+    def test_typoed_common_stops_plan_without_gemini(self):
+        plan = {
+            "origin": {"stop_name": "White Field Post Office"},
+            "destination": {"stop_name": "Kempegowda Bus Station"},
+            "routes": [],
+            "requested": {"label": "Now"},
+            "fallback": {"message": "No scheduled route in this fixture."},
+        }
+        with patch.dict("os.environ", {"GEMINI_API_KEY": ""}), patch.object(
+            assistant, "plan_journey", return_value=plan
+        ) as planner:
+            result = assistant.handle_assistant(self.db, {"message": "whitefield to amjestic"})
+        self.assertEqual(result["intent"], "plan")
+        planner.assert_called_once()
+        self.assertEqual(planner.call_args.args[1:3], ("3", "2"))
 
     def test_plan_receives_preference_and_time_and_swap_uses_page_context(self):
         seen = {}

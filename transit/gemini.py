@@ -21,18 +21,35 @@ its products.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import socket
+import ssl
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import Request, getproxies, urlopen
 
 API_ROOT = os.environ.get("GEMINI_API_ROOT", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
 DEFAULT_MODEL = "gemini-3.1-flash-lite"   # free tier, fast, supports function calling
 DEFAULT_FALLBACK_MODELS = ("gemini-3.5-flash-lite",)
-TIMEOUT_SECONDS = 12
+CONNECT_SECONDS = 6          # opening the connection to Google
+TOTAL_SECONDS = 32           # all attempts together; the page itself gives up after 40 s
+
+
+def _timeout_setting() -> float:
+    """How long to wait for Gemini's answer (GEMINI_TIMEOUT, 3-60 s, default 20)."""
+    try:
+        value = float(os.environ.get("GEMINI_TIMEOUT", "") or 20)
+    except ValueError:
+        value = 20.0
+    return min(60.0, max(3.0, value))
+
+
+TIMEOUT_SECONDS = _timeout_setting()
 TRANSIENT_STATUSES = (408, 429, 500, 502, 503, 504)
 IST = timezone(timedelta(hours=5, minutes=30))
 PREFERENCES = ("fastest", "less_walking", "fewer_transfers")
@@ -137,18 +154,92 @@ def _model_candidates(primary: str) -> list[str]:
     return models
 
 
-def _post(url: str, body: dict, key: str, timeout: float):
-    request = Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
-                      headers={"Content-Type": "application/json", "x-goog-api-key": key})
+class ConnectFailed(OSError):
+    """No connection to Google could be opened at all (retrying the same host will not help)."""
+
+
+def _addresses(host: str, port: int):
+    """IPv4 addresses first: many cloud VMs (Azure included) have no working IPv6 route."""
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [i for i in infos if i[0] == socket.AF_INET] + [i for i in infos if i[0] == socket.AF_INET6]
+
+
+def _connect(host: str, port: int, connect_timeout: float) -> socket.socket:
     try:
-        with urlopen(request, timeout=timeout) as response:
-            return response.status, json.load(response)
-    except HTTPError as error:
+        infos = _addresses(host, port)
+    except OSError as error:
+        raise ConnectFailed(f"could not look up {host} ({error})") from None
+    problems = []
+    for family, kind, proto, _name, address in infos:
+        sock = socket.socket(family, kind, proto)
+        sock.settimeout(connect_timeout)
         try:
-            detail = json.load(error)
-        except (ValueError, OSError):
-            detail = {}
-        return error.code, detail
+            sock.connect(address)
+            return sock
+        except OSError as error:
+            sock.close()
+            problems.append(f"{address[0]}: {type(error).__name__}")
+    raise ConnectFailed(f"could not connect to {host} ({'; '.join(problems) or 'no addresses'})")
+
+
+def _post(url: str, body: dict, key: str, timeout: float):
+    data = json.dumps(body).encode("utf-8")
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+    parts = urlsplit(url)
+    if parts.scheme != "https" or getproxies().get("https"):
+        # Plain http (tests) or a configured proxy: the standard library path.
+        request = Request(url, data=data, method="POST", headers=headers)
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.status, json.load(response)
+        except HTTPError as error:
+            try:
+                detail = json.load(error)
+            except (ValueError, OSError):
+                detail = {}
+            return error.code, detail
+    host, port = parts.hostname, parts.port or 443
+    started = time.monotonic()
+    raw = _connect(host, port, min(CONNECT_SECONDS, timeout))
+    context = ssl.create_default_context()
+    raw.settimeout(timeout)
+    conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=context)
+    try:
+        conn.sock = context.wrap_socket(raw, server_hostname=host)
+        path = parts.path + ("?" + parts.query if parts.query else "")
+        conn.request("POST", path, body=data, headers=headers)
+        response = conn.getresponse()
+        payload = response.read()
+    except socket.timeout:
+        raise TimeoutError("timed out") from None
+    finally:
+        conn.close()
+    took = time.monotonic() - started
+    if took > 6:
+        _log(f"slow answer: {took:.1f} s", key)
+    try:
+        return response.status, json.loads(payload or b"{}")
+    except ValueError:
+        if response.status != 200:
+            return response.status, {}
+        raise
+
+
+def _is_timeout(error) -> bool:
+    return isinstance(error, TimeoutError) or "timed out" in str(error).lower()
+
+
+def _request_failure(error, config, timeout) -> "GeminiUnavailable":
+    if isinstance(error, ConnectFailed):
+        _log(f"network: {error}. Check that the server can reach generativelanguage.googleapis.com on port 443.",
+             config["key"])
+        return GeminiUnavailable("network")
+    if _is_timeout(error):
+        _log(f"timeout: connected, but no answer within {timeout:.0f} s; set GEMINI_TIMEOUT to wait longer",
+             config["key"])
+        return GeminiUnavailable("timeout")
+    _log(f"network: {type(error).__name__}: {error}", config["key"])
+    return GeminiUnavailable("network")
 
 
 def _generate(body: dict, config: dict, transport, timeout: float):
@@ -156,19 +247,27 @@ def _generate(body: dict, config: dict, transport, timeout: float):
     requester = transport or _post
     models = _model_candidates(config["model"])
     last_status, last_data, last_model, last_error = 503, {}, config["model"], None
+    deadline = time.monotonic() + max(timeout, TOTAL_SECONDS)
     for model_index, model in enumerate(models):
         attempts = 2 if model_index == 0 else 1
         url = f"{API_ROOT}/models/{model}:generateContent"
         for attempt in range(attempts):
+            left = deadline - time.monotonic()
+            if left < 2:
+                return last_status, last_data, last_model, last_error
             try:
-                status_code, data = requester(url, body, config["key"], timeout)
+                status_code, data = requester(url, body, config["key"], min(timeout, left))
                 last_status, last_data, last_model, last_error = status_code, data, model, None
+            except ConnectFailed as error:
+                return 504, {}, model, error          # same host for every model: retrying cannot help
             except (TimeoutError, OSError, URLError) as error:
                 last_status, last_data, last_model, last_error = 504, {}, model, error
             except ValueError as error:
                 return 200, {}, model, error
             if last_status not in TRANSIENT_STATUSES:
                 return last_status, last_data, model, last_error
+            if last_error is not None and _is_timeout(last_error) and transport is None:
+                break                                  # a model that timed out gets no second wait
             more_attempts = attempt + 1 < attempts or model_index + 1 < len(models)
             if more_attempts:
                 next_step = "retrying" if attempt + 1 < attempts else "trying fallback model"
@@ -289,19 +388,18 @@ def parse_response(data: dict) -> dict:
     raise GeminiUnavailable("bad_response")
 
 
-def understand(message: str, *, transport=None, timeout: float = TIMEOUT_SECONDS, **context) -> dict:
+def understand(message: str, *, transport=None, timeout: float | None = None, **context) -> dict:
     """Ask Gemini what the traveller wants. Returns an action dict or raises GeminiUnavailable."""
     config = settings()
     if not config["enabled"]:
         raise GeminiUnavailable("no_key")
+    timeout = timeout or _timeout_setting()
     body = build_request(message, **context)
     status_code, data, used_model, request_error = _generate(body, config, transport, timeout)
     if isinstance(request_error, ValueError):
         raise GeminiUnavailable("bad_response") from None
     if request_error is not None:
-        reason = "timeout" if isinstance(request_error, TimeoutError) or "timed out" in str(request_error).lower() else "network"
-        _log(f"{reason}: {type(request_error).__name__}: {request_error}", config["key"])
-        raise GeminiUnavailable(reason) from None
+        raise _request_failure(request_error, config, timeout) from None
     if status_code == 400 and "API_KEY" not in json.dumps(data) and "toolConfig" in body:
         # Some models reject the forced function-call setting; retry once with the plain request.
         _log(f"HTTP 400 from model {used_model}: {_error_text(data) or 'no error message'} (retrying without toolConfig)",
@@ -309,8 +407,7 @@ def understand(message: str, *, transport=None, timeout: float = TIMEOUT_SECONDS
         body = {name: value for name, value in body.items() if name != "toolConfig"}
         status_code, data, used_model, request_error = _generate(body, config, transport, timeout)
         if request_error is not None:
-            _log(f"retry failed: {type(request_error).__name__}: {request_error}", config["key"])
-            raise GeminiUnavailable("network") from None
+            raise _request_failure(request_error, config, timeout) from None
     if status_code != 200:
         _log(f"HTTP {status_code} from model {used_model}: {_error_text(data) or 'no error message'}", config["key"])
     if status_code == 429:
@@ -426,11 +523,12 @@ def explanation_is_grounded(text: str, facts: list[dict]) -> bool:
     return True
 
 
-def explain(routes, *, preference=None, transport=None, timeout: float = TIMEOUT_SECONDS) -> str:
+def explain(routes, *, preference=None, transport=None, timeout: float | None = None) -> str:
     """A short comparison of the options, checked against the facts. Raises GeminiUnavailable."""
     config = settings()
     if not config["enabled"]:
         raise GeminiUnavailable("no_key")
+    timeout = timeout or _timeout_setting()
     facts = facts_from_routes(routes)
     if len(facts) < 1:
         raise GeminiUnavailable("bad_response")
@@ -448,8 +546,8 @@ def explain(routes, *, preference=None, transport=None, timeout: float = TIMEOUT
     }
     status_code, data, used_model, request_error = _generate(body, config, transport, timeout)
     if request_error is not None:
-        _log(f"explain failed: {type(request_error).__name__}: {request_error}", config["key"])
-        raise GeminiUnavailable("network") from None
+        _log("explain failed", config["key"])
+        raise _request_failure(request_error, config, timeout) from None
     if status_code != 200:
         _log(f"explain: HTTP {status_code} from {used_model}: {_error_text(data) or 'no error message'}", config["key"])
         raise GeminiUnavailable("rate_limited" if status_code == 429 else "bad_request")

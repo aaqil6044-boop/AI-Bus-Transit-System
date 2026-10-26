@@ -3,6 +3,7 @@
 import sqlite3
 import time
 from contextlib import closing
+from difflib import get_close_matches
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -1123,6 +1124,7 @@ def plan_journey(
 # target was checked against the imported stop names.
 STOP_ALIASES = {
     "majestic": ["kempegowdabusstation"], "kbs": ["kempegowdabusstation"],
+    "whitefield": ["whitefield"],
     "kempegowdabusstand": ["kempegowdabusstation"],
     "krishnarajapuram": ["krpuram"], "krpura": ["krpuram"],
     "yeshwanthpur": ["yeshawanthapura"], "yeshwantpur": ["yeshawanthapura"],
@@ -1146,8 +1148,6 @@ def search_stops(database, query, limit=12):
 
     query = str(query or "").strip()
     wanted = normalize_stop_text(query)
-    patterns = [wanted] + STOP_ALIASES.get(wanted, [])
-
     with closing(_connect(database)) as conn:
         conn.create_function("norm", 1, normalize_stop_text, deterministic=True)
         if not wanted:
@@ -1157,34 +1157,60 @@ def search_stops(database, query, limit=12):
             ).fetchall()
             rows = [dict(row) for row in rows]
         else:
-            tier = " ".join(
-                f"WHEN norm(stop_name) = ?{n} THEN 0 WHEN norm(stop_name) LIKE ?{n} || '%' THEN 1"
-                for n in range(1, len(patterns) + 1)
-            )
-            contains = " OR ".join(f"norm(stop_name) LIKE '%' || ?{n} || '%'" for n in range(1, len(patterns) + 1))
-            rows = conn.execute(
-                f"""
-                SELECT stop_id, stop_name, stop_lat, stop_lon,
-                       CASE {tier} ELSE 2 END AS tier FROM stops
-                WHERE {contains}
-                ORDER BY tier, length(stop_name), stop_name
-                LIMIT ?{len(patterns) + 1}
-                """,
-                (*patterns, int(limit) * 4),
-            ).fetchall()
-            # Within a match tier, busy stops first: "Whitefield" should offer the
-            # bus station before a post-office stop.
-            counts = {
-                row["stop_id"]: conn.execute(
-                    "SELECT COUNT(DISTINCT t.route_id) FROM stop_times st "
-                    "JOIN trips t ON t.trip_id = st.trip_id WHERE st.stop_id = ?",
-                    (row["stop_id"],),
-                ).fetchone()[0]
-                for row in rows
-            }
-            rows = sorted(rows, key=lambda row: (row["tier"], -counts[row["stop_id"]],
-                                                 len(row["stop_name"]), row["stop_name"]))[: int(limit)]
-            rows = [{**dict(row), "route_count": counts[row["stop_id"]]} for row in rows]
+            def matching_rows(patterns):
+                tier = " ".join(
+                    f"WHEN norm(stop_name) = ?{n} THEN 0 WHEN norm(stop_name) LIKE ?{n} || '%' THEN 1"
+                    for n in range(1, len(patterns) + 1)
+                )
+                contains = " OR ".join(
+                    f"norm(stop_name) LIKE '%' || ?{n} || '%'" for n in range(1, len(patterns) + 1)
+                )
+                matches = conn.execute(
+                    f"""
+                    SELECT stop_id, stop_name, stop_lat, stop_lon,
+                           CASE {tier} ELSE 2 END AS tier FROM stops
+                    WHERE {contains}
+                    ORDER BY tier, length(stop_name), stop_name
+                    LIMIT ?{len(patterns) + 1}
+                    """,
+                    (*patterns, int(limit) * 4),
+                ).fetchall()
+                # Within a match tier, busy stops first: "Whitefield" should offer
+                # the bus station before a post-office stop.
+                counts = {
+                    row["stop_id"]: conn.execute(
+                        "SELECT COUNT(DISTINCT t.route_id) FROM stop_times st "
+                        "JOIN trips t ON t.trip_id = st.trip_id WHERE st.stop_id = ?",
+                        (row["stop_id"],),
+                    ).fetchone()[0]
+                    for row in matches
+                }
+                matches = sorted(
+                    matches,
+                    key=lambda row: (
+                        row["tier"], -counts[row["stop_id"]], len(row["stop_name"]), row["stop_name"]
+                    ),
+                )[: int(limit)]
+                return [{**dict(row), "route_count": counts[row["stop_id"]]} for row in matches]
+
+            patterns = [wanted] + STOP_ALIASES.get(wanted, [])
+            rows = matching_rows(patterns)
+
+            # Keep common route commands useful when the external assistant is
+            # unavailable. Only accept a very close correction and only after the
+            # literal/alias search failed, so short or unrelated names are never
+            # silently replaced with a different stop.
+            if not rows and len(wanted) >= 6:
+                stop_names = {
+                    normalize_stop_text(row[0])
+                    for row in conn.execute("SELECT DISTINCT stop_name FROM stops")
+                    if normalize_stop_text(row[0])
+                }
+                candidates = stop_names | set(STOP_ALIASES)
+                close = get_close_matches(wanted, candidates, n=1, cutoff=0.84)
+                if close and abs(len(close[0]) - len(wanted)) <= 3:
+                    corrected = close[0]
+                    rows = matching_rows([corrected] + STOP_ALIASES.get(corrected, []))
 
     return [
         {
