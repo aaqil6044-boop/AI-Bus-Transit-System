@@ -2523,3 +2523,73 @@ body.map-focus #sideDock .dock-splitter { opacity: 0; pointer-events: none; }
     body.dock-open:not(.map-focus) .status-toast { bottom: calc(var(--dock-space, 0px) + 14px); }
 }
 @media (prefers-reduced-motion: reduce) { #sideDock, #sideDock > section { transition: none !important; scroll-behavior: auto; } }
+
+/* ===================== Saved places, reminders, quick menu ===================== */
+.place-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; min-height: 0; }
+.place-chips:empty { display: none; }
+.place-chip { padding: 6px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.05);
+    color: #d6e2ee; font: 600 12.5px system-ui, sans-serif; cursor: pointer; transition: background .2s, border-color .2s; }
+.place-chip:hover { background: rgba(255,255,255,.1); border-color: rgba(98,230,168,.45); }
+.place-chip.save { border-style: dashed; color: #9fe3c4; }
+.place-hint { font-size: 12px; color: #8ea2b4; padding: 4px 2px; }
+.reminder-pill { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 0; padding: 8px 10px 8px 12px;
+    border-radius: 12px; background: #233a2f; border: 1px solid #3f8f6c; color: #dfffee; font-size: 12.5px; line-height: 1.35; }
+.reminder-pill[hidden] { display: none; }
+.reminder-pill button { flex: 0 0 auto; border: 0; background: transparent; color: #cfeedd; font-size: 14px; cursor: pointer; padding: 2px 6px; }
+
+.quick-menu { position: fixed; z-index: 80; width: min(320px, calc(100vw - 16px)); max-height: min(70vh, 520px); overflow-y: auto;
+    padding: 10px; border-radius: 16px; background: rgb(20, 33, 46); border: 1px solid rgba(114,149,170,.4);
+    box-shadow: 0 16px 40px #000a; color: #e8f4ff; font-size: 13.5px; }
+.quick-menu[hidden] { display: none; }
+.qm-title { font: 700 11px system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; color: #62e6a8; margin: 8px 4px 6px; }
+.qm-title:first-child { margin-top: 2px; }
+.qm-item { display: block; width: 100%; text-align: left; padding: 9px 10px; margin: 2px 0; border-radius: 10px; border: 0;
+    background: transparent; color: #e8f4ff; font: inherit; cursor: pointer; }
+.qm-item:hover { background: #243746; }
+.qm-item.subtle { color: #8ea2b4; font-size: 12.5px; }
+.qm-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 4px; border-bottom: 1px solid rgba(114,149,170,.15); }
+.qm-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qm-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.qm-actions button { padding: 5px 8px; border-radius: 8px; border: 1px solid #456075; background: #243746; color: #e8f4ff;
+    font: 600 12px system-ui, sans-serif; cursor: pointer; }
+.qm-actions button[aria-pressed="true"] { background: #2b6b57; border-color: #4fd1a1; }
+.qm-note { margin: 6px 4px; color: #8ea2b4; font-size: 12px; line-height: 1.4; }
+.qm-link { width: 100%; box-sizing: border-box; border-radius: 8px; background: #0f1b26; color: #e8f4ff; border: 1px solid #456075; padding: 8px; font: 12px ui-monospace, monospace; }
+
+/* ===================== Journey cards: reminder / share, reliability, metro ===================== */
+.card-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+.card-tool { padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05);
+    color: #d6e2ee; font: 600 12.5px system-ui, sans-serif; cursor: pointer; }
+.card-tool:hover { background: rgba(255,255,255,.1); }
+.leg-reliability { color: #b9d7ff; }
+.leg.metro .leg-icon { filter: saturate(1.2); }
+.metro-line { display: inline-block; padding: 1px 7px; margin-right: 2px; border-radius: 6px; font-size: 11px; font-weight: 800;
+    letter-spacing: .03em; color: #fff; background: var(--line, #6a5acd); vertical-align: 1px; }
+.live-reliability { margin: 4px 0 2px; font-size: 12.5px; line-height: 1.4; color: #b9d7ff; }
+.live-reliability[hidden] { display: none; }
+
+/* ===================== Guidance: stop alerts and "missed it?" ===================== */
+.guide-alert { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; padding: 10px 12px; border-radius: 12px;
+    font-weight: 700; line-height: 1.4; animation: guideAlertIn .3s ease; }
+.guide-alert[hidden] { display: none; }
+.guide-alert > span { flex: 1 1 200px; }
+.guide-alert.info { background: #1f3a5c; border: 1px solid #4f8fd6; color: #e6f1ff; }
+.guide-alert.warn { background: #4a3816; border: 1px solid #d9a441; color: #fff3da; }
+.guide-alert.urgent { background: #5a1f2a; border: 1px solid #ff7a8a; color: #fff; font-size: 1.05rem; }
+.guide-alert-action { padding: 6px 10px; border-radius: 9px; border: 1px solid currentColor; background: rgba(255,255,255,.1);
+    color: inherit; font: 700 12.5px system-ui, sans-serif; cursor: pointer; }
+.guide-alert-close { border: 0; background: transparent; color: inherit; opacity: .75; cursor: pointer; font-size: 14px; padding: 2px 4px; }
+#guideAlertToggle[aria-pressed="false"] { opacity: .75; }
+@keyframes guideAlertIn { from { transform: translateY(-4px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .guide-alert { animation: none; } }
+
+/* One-time "what's new" note and the card's quick tools right under Start journey */
+.whats-new { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 0; padding: 9px 10px 9px 12px; border-radius: 12px;
+    background: #1f3350; border: 1px solid #4f8fd6; color: #e6f1ff; font-size: 12.5px; line-height: 1.45; }
+.whats-new[hidden] { display: none; }
+.whats-new strong { flex: 0 0 auto; padding: 1px 7px; border-radius: 6px; background: #4f8fd6; color: #fff; font-size: 11px; }
+.whats-new span { flex: 1 1 auto; }
+.whats-new button { flex: 0 0 auto; border: 0; background: transparent; color: #cfe0ef; cursor: pointer; font-size: 14px; }
+.journey-route-card .card-tools { margin: 8px 0 6px; }
+.journey-route-card .card-tool { flex: 1 1 auto; text-align: center; }
+.route-metric.reliability { color: #b9d7ff; }

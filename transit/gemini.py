@@ -328,11 +328,18 @@ def _history_contents(history) -> list:
 
 
 def build_request(message: str, *, origin_name=None, destination_name=None, preference=None,
-                  depart_at=None, history=None, now=None) -> dict:
+                  depart_at=None, history=None, now=None, saved_labels=None, language=None) -> dict:
     now = (now or datetime.now(IST)).astimezone(IST)
     state = (f"Current time in Bengaluru: {now.strftime('%A %H:%M')}. "
              f"Selected start: {origin_name or 'none'}. Selected destination: {destination_name or 'none'}. "
              f"Selected preference: {preference or 'fastest'}. Selected departure: {depart_at or 'now'}.")
+    labels = [_clean_text(label, 40) for label in (saved_labels or []) if str(label or "").strip()][:10]
+    if labels:
+        state += (f" Saved places: {', '.join(labels)} (when the traveller means one of these, use that exact "
+                  "label as the origin or destination).")
+    if language == "kn":
+        state += (" Reply language: Kannada. Write any reply text in Kannada script; keep stop names and bus "
+                  "numbers exactly as BMTC writes them.")
     contents = _history_contents(history)
     turn = {"role": "user", "parts": [{"text": f"[{state}]\n{_clean_text(message, 300)}"}]}
     if contents and contents[-1]["role"] == "user":

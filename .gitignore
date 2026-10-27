@@ -37,3 +37,8 @@ outputs/
 *.broken-routing-package
 *.leaflet-backup
 *.BACKUP_*
+
+# Runtime caches written by the app
+data/geocode_cache.json
+data/reliability.db*
+data/metro_gtfs.zip

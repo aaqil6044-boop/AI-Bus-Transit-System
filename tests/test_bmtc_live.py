@@ -1,4 +1,6 @@
 """Regression checks for matching an OTP route to a BMTC route variant."""
+import os
+os.environ.setdefault("RELIABILITY", "off")   # tests never write the real reliability database
 import unittest
 from unittest.mock import patch
 

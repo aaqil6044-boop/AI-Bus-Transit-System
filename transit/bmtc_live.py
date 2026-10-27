@@ -27,6 +27,8 @@ from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from . import reliability
+
 API_ROOT = os.environ.get(
     "BMTC_API_ROOT", "https://bmtcmobileapi.karnataka.gov.in/WebAPI"
 ).rstrip("/")
@@ -401,6 +403,7 @@ def live_route(route_number: str, stop_lat: float | None = None,
     ))[:2]
     details_by_route = [(route_id, _post("SearchByRouteDetails_v4", {"routeid": int(route_id), "servicetypeid": 0}))
                         for route_id in route_ids]
+    reliability.record_in_background(route_number, details_by_route)
     branches = _parse_branches(details_by_route)
     board = (float(stop_lat), float(stop_lon)) if stop_lat is not None else None
     alight = (float(alight_lat), float(alight_lon)) if alight_lat is not None else None

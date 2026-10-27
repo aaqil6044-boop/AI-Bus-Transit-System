@@ -14,7 +14,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from transit import gemini, heading_paths
+from transit import gemini, heading_paths, reliability
 from transit.assistant import handle_assistant
 from transit.planner import search_stops
 from transit.otp import plan_journey, router_status, RouterUnavailable
@@ -23,7 +23,7 @@ from transit.bmtc_live import BMTCUnavailable, live_route
 
 ROOT = Path(__file__).parent
 # Bump together with BUILD in static/app.js: the page warns when it talks to an older server.
-BUILD = "2026-10-26-dock-2"
+BUILD = "2026-10-27-features-2"
 ROUTES_FILE = ROOT / "data" / "routes.json"
 FEEDBACK_FILE = ROOT / "data" / "feedback.jsonl"
 TRANSIT_DATABASE = ROOT / "data" / "bengaluru_transit.db"
@@ -31,6 +31,7 @@ MAX_BODY_BYTES = 256 * 1024
 DATABASE_HELP = ("The Bengaluru stop database is missing. Run: python scripts/import_gtfs.py data/bmtc_gtfs.zip")
 # Only the web app is served. The project folder also holds the database, logs and backups.
 PUBLIC_PREFIXES = ("/static/",)
+ROOT_FILES = {"/sw.js": "/static/sw.js", "/manifest.webmanifest": "/static/manifest.webmanifest"}
 
 
 def load_routes() -> dict:
@@ -107,6 +108,8 @@ STATIC_ROOT = (ROOT / "static").resolve()
 
 
 class TransitHandler(SimpleHTTPRequestHandler):
+    extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".webmanifest": "application/manifest+json",
+                      ".js": "text/javascript"}
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
@@ -125,7 +128,8 @@ class TransitHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         # Local builds change frequently. Never serve an older interface from browser cache.
-        if urlparse(self.path).path in ("/", "/static/index.html", "/static/app.js", "/static/styles.css"):
+        if urlparse(self.path).path in ("/", "/static/index.html", "/static/app.js", "/static/styles.css", "/static/sw.js",
+                                        "/static/i18n.js"):
             self.send_header("Cache-Control", "no-store, max-age=0")
         super().end_headers()
 
@@ -151,6 +155,9 @@ class TransitHandler(SimpleHTTPRequestHandler):
             return
         if request_path == "/":
             self.path = "/static/index.html"
+        elif request_path in ROOT_FILES:
+            # The installable-app files must live at the site root to cover the whole page.
+            self.path = ROOT_FILES[request_path]
         elif not request_path.startswith(PUBLIC_PREFIXES):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
@@ -158,7 +165,9 @@ class TransitHandler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self):
         request_path = urlparse(self.path).path
-        if request_path != "/" and not request_path.startswith(PUBLIC_PREFIXES):
+        if request_path in ROOT_FILES:
+            self.path = ROOT_FILES[request_path]
+        elif request_path != "/" and not request_path.startswith(PUBLIC_PREFIXES):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
         super().do_HEAD()
@@ -191,12 +200,22 @@ class TransitHandler(SimpleHTTPRequestHandler):
                 # Lay each bus's "heading" line along the route's own roads from the timetable.
                 if TRANSIT_DATABASE.exists():
                     heading_paths.attach(TRANSIT_DATABASE, result)
+                if isinstance(result, dict):
+                    result = {**result, "reliability": reliability.summary(route_number)}
                 self._json_response(result)
             except BMTCUnavailable as error:
                 status = HTTPStatus.SERVICE_UNAVAILABLE if error.status in (401, 403) else HTTPStatus.BAD_GATEWAY
                 self._json_response({"available": False, "error": str(error)}, status=status)
             except ValueError as error:
                 self._json_response({"available": False, "error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return True
+        if request_path == "/api/reliability":
+            route_number = str(query.get("route", [""])[0]).strip()[:30]
+            if not route_number:
+                self._json_response({"error": "Choose a route number."}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            self._json_response({"route": reliability.base_route(route_number), "summary": reliability.summary(route_number),
+                                 "min_days": reliability.MIN_DAYS, "min_samples": reliability.MIN_SAMPLES})
             return True
         if request_path == "/api/routes":
             self._json_response(load_routes())

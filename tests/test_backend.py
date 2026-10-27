@@ -4,6 +4,8 @@ Run from the project folder:  python -m unittest discover -s tests -p "test_*.py
 No network, router or real database is needed: small fixtures are built in memory.
 """
 import os
+os.environ.setdefault("RELIABILITY", "off")   # tests never write the real reliability database
+import os
 os.environ.setdefault("GEOCODER", "off")   # tests never look places up online
 import json
 import sqlite3

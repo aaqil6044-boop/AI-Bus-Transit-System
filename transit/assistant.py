@@ -14,13 +14,21 @@ from __future__ import annotations
 
 import re
 
-from . import gemini, places
+from . import gemini, places, reliability
 from .otp import RouterUnavailable, plan_journey
 from .planner import STOP_ALIASES, normalize_stop_text, search_stops
 
 HELP = ("I can plan Bengaluru bus journeys from your typed or spoken commands. "
         "Try \"from Hope Farm to Majestic\", add \"less walking\", \"fewer transfers\" or \"leave at 9:30 pm\", "
         "or say \"swap\" to reverse the trip. I am a simple built-in helper, not a general chatbot.")
+
+HELP_KN = ("ನಿಮ್ಮ ಟೈಪ್ ಮಾಡಿದ ಅಥವಾ ಮಾತನಾಡಿದ ಆಜ್ಞೆಗಳಿಂದ ನಾನು ಬೆಂಗಳೂರು ಬಸ್ ಪ್ರಯಾಣಗಳನ್ನು ಯೋಜಿಸುತ್ತೇನೆ. "
+           "ಉದಾಹರಣೆ: \"from Hope Farm to Majestic\", ಜೊತೆಗೆ \"less walking\", \"fewer transfers\" ಅಥವಾ \"leave at 9:30 pm\".")
+
+
+def _kn(payload) -> bool:
+    return isinstance(payload, dict) and payload.get("lang") == "kn"
+
 
 _FILLER = re.compile(
     r"^(?:(?:please|hey|hi|hello|ok|okay)[ ,]+)*(?:(?:can|could) you\s+)?"
@@ -38,6 +46,8 @@ _LIVE = re.compile(r"\bwhere(?:'s|\s+is)\s+(?:my|the|a)\s+bus\b|\blive\s+(?:bus|
                    r"\btrack\b|\bbus(?:es)?\s+(?:near|nearby|coming)\b|"
                    r"\bwhen\s+(?:does|will|is)\b.*\b(?:come|coming|arrive|arriving|reach)\b", re.I)
 _ROUTE_CODE = re.compile(r"\b((?:[A-Z]{1,4}-)?\d{1,3}[A-Z]{0,3}(?:-[A-Z]{1,4})?)\b", re.I)
+_RELIABILITY = re.compile(r"\b(?:usually|normally|often|always)?\s*(?:late|delayed|delays?|on\s+time|punctual|reliable|reliability)\b", re.I)
+_SAVED_WORD = re.compile(r"^(?:my\s+)?(home|house|work|office)$", re.I)
 _SWAP = re.compile(r"\b(?:swap|reverse|flip|return trip|way back|go back|other direction|opposite direction)\b", re.I)
 
 
@@ -49,7 +59,13 @@ def parse_command(message: str) -> dict:
     """Split a message into places, preference, departure time and swap intent."""
     text = _clean(str(message))
     parsed = {"origin": None, "destination": None, "preference": None, "depart_at": None, "swap": False,
-              "from_here": False, "live": False, "route": None}
+              "from_here": False, "live": False, "route": None, "reliability": False}
+    if _RELIABILITY.search(text):
+        code = next((m.group(1) for m in _ROUTE_CODE.finditer(text) if not re.fullmatch(r"\d{1,2}", m.group(1))), None)
+        if code:
+            # "is 500D usually late?": answered from measured BMTC data, not a journey plan.
+            parsed["reliability"], parsed["route"] = True, code.upper()
+            return parsed
     if _LIVE.search(text):
         # "where is my bus", "when will 500D come": a live-position question, not a journey plan.
         parsed["live"] = True
@@ -92,6 +108,8 @@ def parse_command(message: str) -> dict:
             parsed["destination"] = _clean(text[3:])
         elif re.match(r"^from .+", text, re.I):
             parsed["origin"] = _clean(text[5:])
+        elif _SAVED_WORD.match(text):
+            parsed["destination"] = text          # "take me home", "go to work"
     for key in ("origin", "destination"):
         if parsed[key]:
             parsed[key] = re.sub(r"^(?:(?:the|my|to|from)(?:\s+|$))+", "", parsed[key], flags=re.I) or None
@@ -145,6 +163,41 @@ def resolve_place(database, text: str, *, look_up: bool = True, geocode_transpor
     return None, 0, suggestions[:4]
 
 
+_SAVED_ALIASES = {"house": "home", "office": "work"}
+BOUNDS = (12.65, 13.45, 77.20, 78.00)
+
+
+def _saved_place(payload: dict, term):
+    """A place the traveller saved in this browser ("home", "work", "gym"...).
+
+    Returns (stop, context, label) when found, (None, None, label) for Home/Work that is not saved yet,
+    or None when the term is not a saved-place word. Saved places come from the page only."""
+    if not term:
+        return None
+    key = re.sub(r"^my\s+", "", str(term).strip(), flags=re.I).casefold()
+    key = _SAVED_ALIASES.get(key, key)
+    for item in (payload.get("saved") if isinstance(payload.get("saved"), list) else [])[:20]:
+        if not isinstance(item, dict) or str(item.get("label") or "").strip().casefold() != key:
+            continue
+        try:
+            lat, lon = float(item["lat"]), float(item["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (BOUNDS[0] <= lat <= BOUNDS[1] and BOUNDS[2] <= lon <= BOUNDS[3]):
+            continue
+        label = str(item.get("label")).strip()[:40]
+        name = str(item.get("name") or label).strip()[:120] or label
+        point = bool(item.get("is_map_point")) or not item.get("id")
+        stop = {"stop_id": str(item.get("id") or f"saved-{key}")[:80], "stop_name": name, "stop_lat": lat, "stop_lon": lon}
+        if point:
+            stop["is_map_point"] = True
+        context = {"id": stop["stop_id"], "name": name, "lat": lat, "lon": lon, "is_map_point": True} if point else None
+        return stop, context, label
+    if key in ("home", "work"):
+        return None, None, key.capitalize()
+    return None
+
+
 def _as_context(stop):
     """A place found on the map (not a BMTC stop) is planned from its exact point."""
     if stop and stop.get("is_map_point"):
@@ -185,15 +238,32 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
     # understands do not need a network round-trip to Gemini. Gemini remains available for
     # ambiguous wording, landmarks, typos, translations and conversational follow-ups.
     if re.fullmatch(r"(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[.! ]*", message, re.I):
-        result = _reply("Hi! Tell me your starting point and destination, and I’ll find the best BMTC journey.",
+        result = _reply("ನಮಸ್ಕಾರ! ನಿಮ್ಮ ಆರಂಭದ ಸ್ಥಳ ಮತ್ತು ಗಮ್ಯಸ್ಥಾನ ತಿಳಿಸಿ, ಉತ್ತಮ BMTC ಪ್ರಯಾಣವನ್ನು ಹುಡುಕುತ್ತೇನೆ." if _kn(payload) else
+                        "Hi! Tell me your starting point and destination, and I’ll find the best BMTC journey.",
                         intent="answer", origin=_context_to_stop(_context_stop(payload.get("origin"))),
                         destination=_context_to_stop(_context_stop(payload.get("destination"))),
                         preference=payload.get("preference") if payload.get("preference") in gemini.PREFERENCES else "fastest",
                         depart_at=payload.get("depart_at") or None)
         result["engine"] = "instant"
         return result
+    if rules.get("reliability"):
+        found = reliability.summary(rules["route"])
+        text = found["text"] if found else (
+            f"{rules['route']} ಬಗ್ಗೆ ಸಾಕಷ್ಟು BMTC ಅಳತೆಗಳು ಇನ್ನೂ ಇಲ್ಲ. ಈ ಮಾರ್ಗವನ್ನು ಲೈವ್ ಆಗಿ ಪರಿಶೀಲಿಸಿದಾಗಲೆಲ್ಲ BMTC ಯ ನಿಗದಿತ ಮತ್ತು "
+            f"ನಿಜವಾದ ಸಮಯಗಳಿಂದ ಆ್ಯಪ್ ಕಲಿಯುತ್ತದೆ; ಕನಿಷ್ಠ {reliability.MIN_DAYS} ಬೇರೆ ದಿನಗಳ ಅಳತೆಗಳಾದ ನಂತರ ಸಾಮಾನ್ಯ ತಡವನ್ನು ತೋರಿಸುತ್ತದೆ."
+            if _kn(payload) else
+            f"I do not have enough BMTC measurements for {rules['route']} yet. The app learns from BMTC's own scheduled "
+            "and actual times whenever this route is checked live, and shows a typical delay once it has readings "
+            f"on at least {reliability.MIN_DAYS} different days.")
+        result = _reply(text, intent="answer", origin=_context_to_stop(_context_stop(payload.get("origin"))),
+                        destination=_context_to_stop(_context_stop(payload.get("destination"))),
+                        preference=payload.get("preference") if payload.get("preference") in gemini.PREFERENCES else "fastest",
+                        depart_at=payload.get("depart_at") or None)
+        result["engine"], result["reliability"] = "instant", found
+        return result
     place_terms = [rules.get(key) for key in ("origin", "destination") if rules.get(key)]
-    places_understood = bool(place_terms) and all(resolve_place(database, term, look_up=False)[0] for term in place_terms)
+    places_understood = bool(place_terms) and all(
+        _saved_place(payload, term) is not None or resolve_place(database, term, look_up=False)[0] for term in place_terms)
     locally_understood = places_understood or any((rules.get("preference"), rules.get("depart_at"),
                                                    rules.get("swap"), rules.get("from_here"), rules.get("live")))
     engine, notice, ai = "built-in", "", None
@@ -207,7 +277,9 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
                 destination_name=destination_now["stop_name"] if destination_now else None,
                 preference=payload.get("preference"), depart_at=payload.get("depart_at"),
                 history=payload.get("history") if isinstance(payload.get("history"), list) else None,
-                now=now)
+                now=now, saved_labels=[item.get("label") for item in (payload.get("saved") or [])
+                                       if isinstance(item, dict)] if isinstance(payload.get("saved"), list) else None,
+                language="kn" if payload.get("lang") == "kn" else None)
             engine = "gemini"
         except gemini.GeminiUnavailable as error:
             notice = error.note
@@ -283,6 +355,7 @@ def _answer(database, payload: dict, parsed: dict, rules, now) -> dict:
     destination = _context_to_stop(destination_ctx)
     notes = []
     busiest = []
+    saved_destination = None
 
     if parsed["swap"] and not (parsed["origin"] or parsed["destination"]):
         if not (origin and destination):
@@ -294,13 +367,30 @@ def _answer(database, payload: dict, parsed: dict, rules, now) -> dict:
     else:
         for key in ("origin", "destination"):
             if parsed[key]:
+                saved = _saved_place(payload, parsed[key])
+                if saved is not None:
+                    stop, context, label = saved
+                    if stop is None:
+                        return _reply((f"ನೀವು ಇನ್ನೂ {'ಮನೆ' if label == 'Home' else 'ಕೆಲಸದ ಸ್ಥಳ' if label == 'Work' else label} ಉಳಿಸಿಲ್ಲ. "
+                                       "ಸ್ಥಳವನ್ನು 'ಎಲ್ಲಿಂದ' ಅಥವಾ 'ಎಲ್ಲಿಗೆ' ಪೆಟ್ಟಿಗೆಯಲ್ಲಿ ಹಾಕಿ, ☆ ಸ್ಥಳ ಉಳಿಸಿ ಒತ್ತಿ.") if _kn(payload) else
+                                      f"You have not saved {label} yet. Put the place in the From or To box, tap ☆ "
+                                      f"next to it and choose {label}.", intent="error", origin=origin,
+                                      destination=destination, preference=preference, depart_at=depart_at)
+                    if key == "origin":
+                        origin, origin_ctx = stop, context
+                    else:
+                        destination, destination_ctx = stop, context
+                        saved_destination = label
+                    continue
                 stop, others, suggestions = resolve_place(database, parsed[key])
                 if stop is None and rules and rules.get(key) and rules[key].casefold() != parsed[key].casefold():
                     stop, others, more = resolve_place(database, rules[key])
                     suggestions = suggestions or more
                 if stop is None:
                     hint = (" Closest names: " + ", ".join(suggestions) + ".") if suggestions else ""
-                    return _reply(f"I could not find \"{parsed[key]}\" as a BMTC stop or a Bengaluru place.{hint} "
+                    return _reply((f"\"{parsed[key]}\" ಎಂಬ BMTC ನಿಲ್ದಾಣ ಅಥವಾ ಬೆಂಗಳೂರಿನ ಸ್ಥಳ ಸಿಗಲಿಲ್ಲ.{hint} ಬೇರೆ ಕಾಗುಣಿತ, "
+                                   "ಹತ್ತಿರದ ಹೆಗ್ಗುರುತು ಪ್ರಯತ್ನಿಸಿ, ಅಥವಾ ನಕ್ಷೆಯಲ್ಲಿ ಆರಿಸಿ.") if _kn(payload) else
+                                  f"I could not find \"{parsed[key]}\" as a BMTC stop or a Bengaluru place.{hint} "
                                   "Try another spelling, a nearby landmark, or use Pick on map.",
                                   intent="error", origin=origin, destination=destination,
                                   preference=preference, depart_at=depart_at)
@@ -323,13 +413,20 @@ def _answer(database, payload: dict, parsed: dict, rules, now) -> dict:
                               intent="partial", origin=origin, destination=destination,
                               preference=preference, depart_at=depart_at)
         else:
-            return _reply(HELP, intent="help", origin=origin, destination=destination,
+            return _reply(HELP_KN if _kn(payload) else HELP, intent="help", origin=origin, destination=destination,
                           preference=preference, depart_at=depart_at)
 
+    if origin is None and destination is not None and saved_destination and not parsed["origin"]:
+        # "take me home": start from where the traveller is now.
+        return _reply(f"ನಿಮ್ಮ ಈಗಿನ ಸ್ಥಳದಿಂದ {destination['stop_name']} ಗೆ ಹೋಗುವ ಪ್ರಯಾಣ ಹುಡುಕಲಾಗುತ್ತಿದೆ." if _kn(payload) else
+                      f"Using your current location as the start, going to {saved_destination} ({destination['stop_name']}).",
+                      intent="use_location", destination=destination, preference=preference, depart_at=depart_at)
     if origin is None or destination is None:
         missing = "starting point" if origin is None else "destination"
         known = destination if origin is None else origin
-        return _reply(f"Got it: {known['stop_name']}. Where is your {missing}?", intent="partial",
+        question = (f"ಸರಿ: {known['stop_name']}. ನಿಮ್ಮ {'ಆರಂಭದ ಸ್ಥಳ' if origin is None else 'ಗಮ್ಯಸ್ಥಾನ'} ಯಾವುದು?" if _kn(payload)
+                    else f"Got it: {known['stop_name']}. Where is your {missing}?")
+        return _reply(question, intent="partial",
                       origin=origin, destination=destination, preference=preference, depart_at=depart_at)
     if origin["stop_id"] == destination["stop_id"] or (
             origin["stop_lat"] == destination["stop_lat"] and origin["stop_lon"] == destination["stop_lon"]):
@@ -346,9 +443,10 @@ def _answer(database, payload: dict, parsed: dict, rules, now) -> dict:
     except RouterUnavailable as error:
         return _reply(f"I found {origin['stop_name']} and {destination['stop_name']}, but {error}", intent="error",
                       origin=origin, destination=destination, preference=preference, depart_at=depart_at)
-    reply = _reply(" ".join([_summary(plan)] + notes), intent="plan", origin=origin, destination=destination,
+    summary = _summary_kn(plan) if _kn(payload) else _summary(plan)
+    reply = _reply(" ".join([summary] + notes), intent="plan", origin=origin, destination=destination,
                    preference=preference, depart_at=depart_at, plan=plan)
-    reply["summary"] = _summary(plan)
+    reply["summary"] = summary
     return reply
 
 
@@ -375,6 +473,22 @@ def _summary(plan: dict) -> str:
         detail = f"walking is best: about {best['walking_minutes']} min"
     return (f"{origin} → {destination} ({when}): {detail}. Scheduled times, not live arrivals. "
             f"{len(routes)} option{'s' if len(routes) != 1 else ''} are in the panel below.")
+
+
+def _summary_kn(plan: dict) -> str:
+    routes = plan.get("routes") or []
+    origin, destination = plan["origin"]["stop_name"], plan["destination"]["stop_name"]
+    if not routes:
+        return (f"{origin} ನಿಂದ {destination} ಗೆ ನಿಗದಿತ ಬಸ್ ಪ್ರಯಾಣ ಸಿಗಲಿಲ್ಲ. ಬೇರೆ ಸಮಯ ಅಥವಾ ಹತ್ತಿರದ ನಿಲ್ದಾಣ ಪ್ರಯತ್ನಿಸಿ.")
+    best = routes[0]
+    if best.get("transit"):
+        buses = " ನಂತರ ".join(best["route_numbers"])
+        changes = "ನೇರ" if best["transfers"] == 0 else f"{best['transfers']} ಬದಲಾವಣೆ"
+        detail = f"ಬಸ್ {buses} ({changes}), {best['departure_time']} ಕ್ಕೆ ಹೊರಟು {best['arrival_time']} ಕ್ಕೆ ತಲುಪುವುದು"
+    else:
+        detail = f"ನಡಿಗೆಯೇ ಉತ್ತಮ: ಸುಮಾರು {best['walking_minutes']} ನಿಮಿಷ"
+    return (f"{origin} → {destination}: {detail}. ವೇಳಾಪಟ್ಟಿಯ ಸಮಯಗಳು, ಲೈವ್ ಆಗಮನಗಳಲ್ಲ. "
+            f"{len(routes)} ಆಯ್ಕೆಗಳು ಕೆಳಗಿನ ಫಲಕದಲ್ಲಿವೆ.")
 
 
 def _reply(reply: str, *, intent: str, origin=None, destination=None, preference="fastest", depart_at=None, plan=None) -> dict:

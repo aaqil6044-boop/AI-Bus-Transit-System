@@ -5,8 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <title>Bengaluru Transit Assistant</title>
+    <meta name="theme-color" content="#14212e">
+    <meta name="description" content="Plan BMTC bus journeys in Bengaluru, with live bus positions when BMTC publishes them.">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/static/icons/icon-192.png" type="image/png">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
     
-<link rel="stylesheet" href="/static/styles.css?v=20261026-dock-2">
+<link rel="stylesheet" href="/static/styles.css?v=20261027-features-2">
 <link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
 </head>
 
@@ -24,10 +29,8 @@
             <div class="brand-mark">B</div>
 
             <div>
-                <div class="brand-title">Bengaluru Transit</div>
-                <div class="brand-subtitle">
-                    Scheduled BMTC bus journeys
-                </div>
+                <div class="brand-title" data-i18n>Bengaluru Transit</div>
+                <div class="brand-subtitle" data-i18n>Scheduled BMTC bus journeys</div>
             </div>
         </div>
 
@@ -36,7 +39,7 @@
             <button
                 id="locateBtn"
                 class="icon-button"
-                title="Use my location"
+                title="Use my location" data-i18n-title
             >
                 ◉
             </button>
@@ -44,7 +47,7 @@
             <button
                 id="layersBtn"
                 class="icon-button"
-                title="Map layers"
+                title="Map layers" data-i18n-title
             >
                 ◈
             </button>
@@ -52,9 +55,10 @@
             <button
                 id="profileBtn"
                 class="profile-button"
-                title="Travel preferences"
+                title="Language, saved places and app" data-i18n-title
+                aria-haspopup="true"
             >
-                <span>●</span>
+                <span>☰</span>
             </button>
 
         </div>
@@ -72,20 +76,16 @@
                     BENGALURU
                 </div>
 
-                <h1>
-                    Where are you going?
-                </h1>
+                <h1 data-i18n>Where are you going?</h1>
 
-                <p>
-                    Plan a bus journey, or type a command below.
-                </p>
+                <p data-i18n>Plan a bus journey, or type a command below.</p>
             </div>
 
             <button
                 id="newJourneyBtn"
                 class="small-button"
             >
-                + New
+                <span data-i18n>+ New</span>
             </button>
 
         </div>
@@ -101,14 +101,14 @@
                 <div class="search-field">
 
                     <label for="originInput">
-                        FROM <button type="button" id="originMapBtn" class="map-point-button">Pick on map</button>
+                        <span data-i18n>FROM</span> <button type="button" id="originMapBtn" class="map-point-button" data-i18n>Pick on map</button>
                     </label>
 
                     <input
                         id="originInput"
                         type="text"
                         autocomplete="off"
-                        placeholder="Your starting point"
+                        placeholder="Your starting point" data-i18n-ph
                     >
 
                     <div
@@ -132,14 +132,14 @@
                 <div class="search-field">
 
                     <label for="destinationInput">
-                        TO <button type="button" id="destinationMapBtn" class="map-point-button">Pick on map</button>
+                        <span data-i18n>TO</span> <button type="button" id="destinationMapBtn" class="map-point-button" data-i18n>Pick on map</button>
                     </label>
 
                     <input
                         id="destinationInput"
                         type="text"
                         autocomplete="off"
-                        placeholder="Where do you want to go?"
+                        placeholder="Where do you want to go?" data-i18n-ph
                     >
 
                     <div
@@ -154,15 +154,20 @@
         </div>
 
 
+        <!-- SAVED PLACES / RECENT TRIPS -->
+        <div id="placeChips" class="place-chips" aria-label="Saved places and recent trips"></div>
+        <div id="reminderPill" class="reminder-pill" role="status" hidden></div>
+        <div id="whatsNew" class="whats-new" role="note" hidden></div>
+
         <!-- DEPARTURE TIME -->
         <div class="depart-row" role="group" aria-label="When do you want to leave?">
-            <span class="depart-label" id="departLabel">LEAVE</span>
-            <button type="button" id="departNow" class="depart-chip active" aria-pressed="true">Now</button>
+            <span class="depart-label" id="departLabel" data-i18n>LEAVE</span>
+            <button type="button" id="departNow" class="depart-chip active" aria-pressed="true" data-i18n>Now</button>
             <label class="depart-chip depart-time-chip" for="departInput">
-                <span>At</span>
+                <span data-i18n>At</span>
                 <input id="departInput" type="time" aria-labelledby="departLabel" step="300">
             </label>
-            <span id="departHint" class="depart-hint">Timetable times, not live arrivals.</span>
+            <span id="departHint" class="depart-hint" data-i18n>Timetable times, not live arrivals.</span>
         </div>
 
         <!-- AI COMMAND -->
@@ -177,7 +182,7 @@
                 <input
                     id="aiInput"
                     type="text"
-                    placeholder="Try: from Hope Farm to Majestic, less walking"
+                    placeholder="Try: from Hope Farm to Majestic, less walking" data-i18n-ph
                     autocomplete="off"
                 >
 
@@ -199,7 +204,7 @@
             id="planBtn"
             class="primary-button"
         >
-            <span>Find routes</span>
+            <span data-i18n>Find routes</span>
             <span>→</span>
         </button>
 
@@ -208,15 +213,15 @@
         <div class="quick-actions">
 
             <button class="quick-chip" type="button" data-preference="less_walking" aria-pressed="false">
-                🚶 Less walking
+                <span data-i18n>🚶 Less walking</span>
             </button>
 
             <button class="quick-chip" type="button" data-preference="fewer_transfers" aria-pressed="false">
-                🔄 Fewer transfers
+                <span data-i18n>🔄 Fewer transfers</span>
             </button>
 
             <button class="quick-chip" type="button" data-preference="fastest" aria-pressed="false">
-                ⚡ Fastest
+                <span data-i18n>⚡ Fastest</span>
             </button>
 
         </div>
@@ -413,20 +418,23 @@
     <div id="sideDock" class="side-dock">
     <button id="dockGrip" class="dock-grip" type="button" aria-label="Resize: drag up or down, or press to change size" title="Pull up or down"><span></span></button>
     <div class="dock-tabs" role="tablist" aria-label="Journey panels">
-        <button type="button" role="tab" class="dock-tab" data-tab="guide" aria-selected="true">🧭 Journey steps</button>
-        <button type="button" role="tab" class="dock-tab" data-tab="live" aria-selected="false">🚌 Live buses</button>
+        <button type="button" role="tab" class="dock-tab" data-tab="guide" aria-selected="true" data-i18n>🧭 Journey steps</button>
+        <button type="button" role="tab" class="dock-tab" data-tab="live" aria-selected="false" data-i18n>🚌 Live buses</button>
     </div>
     <section id="journeyGuide" class="journey-guide" hidden aria-label="Journey guidance">
-        <div class="dock-head" title="Click to fold or unfold"><div class="dock-titles"><div class="eyebrow">YOUR JOURNEY · DEVICE GPS</div><div class="dock-sum" id="guideSum"></div></div><div class="dock-panel-actions"><button type="button" class="dock-fold" data-target="journeyGuide" aria-label="Fold this panel" title="Fold / unfold">▾</button><button type="button" class="dock-max" data-target="journeyGuide" aria-label="Give this panel the most room" title="Make this panel big">⤢</button></div></div>
+        <div class="dock-head" title="Click to fold or unfold"><div class="dock-titles"><div class="eyebrow" data-i18n>YOUR JOURNEY · DEVICE GPS</div><div class="dock-sum" id="guideSum"></div></div><div class="dock-panel-actions"><button type="button" class="dock-fold" data-target="journeyGuide" aria-label="Fold this panel" title="Fold / unfold">▾</button><button type="button" class="dock-max" data-target="journeyGuide" aria-label="Give this panel the most room" title="Make this panel big">⤢</button></div></div>
+        <div id="guideAlert" class="guide-alert" role="alert" hidden></div>
         <h2 id="guideTitle"></h2>
         <p id="guideDetail"></p>
         <p id="guideGps" role="status" aria-live="polite">Waiting for your location…</p>
         <div class="guide-controls">
-            <button id="guidePrev" type="button">Previous</button>
+            <button id="guidePrev" type="button" data-i18n>Previous</button>
             <button id="guideNext" type="button">Next step</button>
             <button id="guideFollow" type="button">Recenter</button>
-            <button id="guideOptions" type="button">Route options</button>
-            <button id="guideStop" type="button">Stop</button>
+            <button id="guideOptions" type="button" data-i18n>Route options</button>
+            <button id="guideStop" type="button" data-i18n>Stop</button>
+            <button id="guideAlertToggle" type="button" aria-pressed="true">🔔 Stop alerts on</button>
+            <button id="guideShare" type="button" data-i18n>↗ Share trip</button>
         </div>
         <div id="guideRouteSummary" class="guide-route-summary"></div>
         <p class="guide-disclaimer">Journey times come from the BMTC timetable. Bus markers appear only when BMTC publishes a current position for a bus heading your way. Confirm boarding and transfers yourself.</p>
@@ -434,12 +442,13 @@
     <div id="dockSplitter" class="dock-splitter" role="separator" aria-orientation="horizontal" tabindex="0"
          aria-label="Drag to share space between journey steps and live buses (double-click to reset)" title="Drag to resize · double-click to share equally"><span></span></div>
     <section id="liveBusPanel" class="journey-guide live-bus-panel" hidden aria-label="BMTC live buses">
-        <div class="dock-head" title="Click to fold or unfold"><div class="dock-titles"><div class="eyebrow">BMTC LIVE VEHICLES</div><div class="dock-sum" id="liveSum"></div></div><div class="dock-panel-actions"><button type="button" class="dock-fold" data-target="liveBusPanel" aria-label="Fold this panel" title="Fold / unfold">▾</button><button type="button" class="dock-max" data-target="liveBusPanel" aria-label="Give this panel the most room" title="Make this panel big">⤢</button></div></div>
+        <div class="dock-head" title="Click to fold or unfold"><div class="dock-titles"><div class="eyebrow" data-i18n>BMTC LIVE VEHICLES</div><div class="dock-sum" id="liveSum"></div></div><div class="dock-panel-actions"><button type="button" class="dock-fold" data-target="liveBusPanel" aria-label="Fold this panel" title="Fold / unfold">▾</button><button type="button" class="dock-max" data-target="liveBusPanel" aria-label="Give this panel the most room" title="Make this panel big">⤢</button></div></div>
         <div class="live-head">
         <h2 id="liveBusTitle">Route buses</h2>
         <p id="liveBusStatus" class="live-headline" role="status" aria-live="polite">Connecting to BMTC…</p>
         <p id="liveBusMeta" class="live-meta"></p>
-        <div class="guide-controls live-top-controls"><button id="liveBusRefresh" type="button">Refresh now</button><button id="liveBusStop" type="button">Stop live tracking</button></div>
+        <p id="liveReliability" class="live-reliability" hidden></p>
+        <div class="guide-controls live-top-controls"><button id="liveBusRefresh" type="button">Refresh now</button><button id="liveBusStop" type="button" data-i18n>Stop live tracking</button></div>
         </div>
         <div id="liveBusList"></div>
         <div class="live-map-actions"><button id="liveBusFit" class="live-bus-button" type="button">Show these buses on the map</button>
@@ -450,7 +459,8 @@
         <details class="guide-disclaimer"><summary>About these positions</summary>Positions and update times come from BMTC’s feed. A bus is marked “heading to your stop” only when BMTC’s own stop order shows it before your boarding stop in your direction. Old or missing timestamps are labelled STALE or NO TIMESTAMP, never live.</details>
     </section>
     </div>
-    <button id="showPanelsBtn" class="show-panels-pill" type="button" hidden aria-label="Show the trip panels again">▲ Show trip panels</button>
+    <button id="showPanelsBtn" class="show-panels-pill" type="button" hidden aria-label="Show the trip panels again" data-i18n>▲ Show trip panels</button>
+    <div id="quickMenu" class="quick-menu" hidden></div>
     <!-- STATUS -->
     <div
         id="statusToast"
@@ -480,7 +490,8 @@
 
 
 <script src="/static/vendor/maplibre-gl.js"></script>
-<script src="/static/app.js?v=20261026-dock-2"></script>
+<script src="/static/i18n.js?v=20261027-features-2"></script>
+<script src="/static/app.js?v=20261027-features-2"></script>
 </body>
 </html>
 

@@ -90,6 +90,18 @@ Gemini is called only when the built-in reader cannot understand a message; gree
 
 Both panels have a slim pinned header with a one-line summary; click it (or ▾) to fold, ⤢ to give one panel the room. On desktop, drag the handle between them (a panel squeezed below its header folds; double-click resets; the split is remembered). On phones the panels share a bottom sheet with tabs: pull it by the handle, the tabs or the header; it snaps to small (tabs + summary), half or full height, and a quick flick moves one size.
 
+## Everyday features
+
+- **Get-off alert**: while riding, the phone vibrates and shows "Get ready: <stop> is next" one stop before the alighting stop, and "Get off here" at it (plus a system notification when allowed). It uses the planned stop list and a GPS fix; weak (over 120 m) or old fixes never trigger it. The 🔔 button in the journey panel turns it off.
+- **Saved places and recent trips**: ☆ Save place stores Home, Work or a favourite in this browser only (never on the server). One tap on a saved place plans a trip there (from your location when no start is set). The assistant understands "take me home", "home to office" and similar. The last six trips are under 🕘 Recent.
+- **Leave reminder**: 🔔 Remind me to leave on a journey card alerts 5 minutes before the journey's start and again at it, using the timetable. If BMTC's live feed then shows one of those buses heading to the stop, the reminder says so; otherwise it says nothing live. Reminders work while the page is open (phones may pause background pages).
+- **Missed it?**: while guided to a stop, if the planned bus is more than 5 minutes past its timetable time and BMTC's latest live check (under 3 minutes old) shows none of those buses coming within 15 minutes, a banner offers the next options from that stop (or from your GPS position when you have moved away).
+- **Learned reliability**: each live check stores BMTC's own scheduled and actual times at stops buses have passed (`data/reliability.db`, kept 60 days). A route's typical delay at that hour (weekdays and weekends separately) is shown on journey cards, in the live panel and in answers to "is 500D usually late?" only after at least 12 measurements on 3 different days. If BMTC's feed does not include those times, nothing is shown.
+- **Share my trip**: ↗ Share sends a link that opens the same journey (and live tracking for its first bus). It carries only the two places, the time and the preference.
+- **Kannada**: ☰ → Language switches the interface to Kannada, voice input to kn-IN, and asks Gemini to reply in Kannada. Stop names and bus numbers stay as BMTC writes them. A native speaker should review `static/i18n.js`.
+- **Installable app**: the page can be installed from the browser (☰ → Install, or the browser's own menu). The app shell works on a poor connection; journeys, live buses and the assistant always need the server and are never served from a cache.
+- **Namma Metro**: the router asks for metro legs, and journey cards, steps and live tracking handle them (metro legs are never sent to BMTC's bus feed). Metro appears in journeys only after adding the official BMRCL timetable from the DULT Transit Data Hub: `python scripts/add_metro.py path\to\bmrcl_gtfs.zip`, then rebuild the route graph (`build-otp-graph.ps1`) and restart.
+
 ## Testing live screens without the real feed
 
 `python scripts/simulated_bmtc_feed.py` starts a clearly labelled SIMULATION on port 8790: bus positions are invented, stop order is real. Set `BMTC_API_ROOT=http://127.0.0.1:8790/WebAPI` before `python app.py` to use it. Never use it to judge real bus locations. Opening the page with `?debug` exposes the app state as `window.__transit` for manual inspection.

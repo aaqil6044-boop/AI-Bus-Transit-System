@@ -28,6 +28,7 @@ TIGHT_TRANSFER_MINUTES = 3
 LONG_WALK_METERS = 900
 MAX_WALK_ONLY_MINUTES = 30
 TRIVIAL_WALK_METERS = 25
+METRO_MODES = ('SUBWAY', 'RAIL', 'TRAM')   # Namma Metro legs, when a metro feed is in the graph
 
 # The BMTC GTFS contains internal fare-system test entries ("O Test AFCS",
 # "Vivek_Test14"...). They are not passenger services and must never be offered.
@@ -38,7 +39,7 @@ QUERY = '''query($origin: PlanLabeledLocationInput!, $destination: PlanLabeledLo
     $dateTime: PlanDateTimeInput!, $filters: [TransitFilterInput!]) {
   planConnection(origin: $origin, destination: $destination,
     dateTime: $dateTime, first: 10,
-    modes: {direct: [WALK], transit: {transit: [{mode: BUS}]}},
+    modes: {direct: [WALK], transit: {transit: [{mode: BUS}, {mode: SUBWAY}, {mode: RAIL}]}},
     preferences: {transit: {filters: $filters}}) {
     routingErrors { code description }
     edges { node { start end legs {
@@ -47,7 +48,7 @@ QUERY = '''query($origin: PlanLabeledLocationInput!, $destination: PlanLabeledLo
       trip { gtfsId directionId tripHeadsign }
       from {name lat lon stop {gtfsId}}
       to {name lat lon stop {gtfsId}}
-      route {gtfsId shortName longName}
+      route {gtfsId shortName longName color textColor}
       legGeometry {points}
       stopCalls {
         stopLocation { ... on Stop { gtfsId name lat lon } }
@@ -258,6 +259,7 @@ def build_routes(plan, requested, profile, excluded=()):
                 'duration_minutes': minutes, 'distance_m': round(leg['distance']),
                 'departure_time': start.astimezone(IST).strftime('%H:%M'),
                 'arrival_time': end.astimezone(IST).strftime('%H:%M'),
+                'departure_iso': start.astimezone(IST).isoformat(), 'arrival_iso': end.astimezone(IST).isoformat(),
                 'realtime': bool(leg.get('realTime')),
                 'schedule_type': 'live_estimate' if leg.get('realTime') else 'timetable',
                 'wait_before_minutes': wait_before,
@@ -266,8 +268,11 @@ def build_routes(plan, requested, profile, excluded=()):
                 bus_seen += 1
                 stops = _leg_stops(leg)
                 trip = leg.get('trip') or {}
+                metro = str(leg.get('mode') or '').upper() in METRO_MODES
                 record.update(
-                    role='bus', route_id=str(route_info.get('gtfsId', '')).split(':', 1)[-1],
+                    role='metro' if metro else 'bus', vehicle='metro' if metro else 'bus',
+                    line_color=('#' + route_info['color']) if re.fullmatch(r'[0-9A-Fa-f]{6}', str(route_info.get('color') or '')) else None,
+                    route_id=str(route_info.get('gtfsId', '')).split(':', 1)[-1],
                     trip_id=str(trip.get('gtfsId', '')).split(':', 1)[-1],
                     direction_id=trip.get('directionId'), service_date=leg.get('serviceDate'),
                     from_stop_id=str(((leg['from'].get('stop') or {}).get('gtfsId', ''))).split(':', 1)[-1],
@@ -334,6 +339,8 @@ def build_routes(plan, requested, profile, excluded=()):
             'scheduled_wait_minutes': first_wait + transfer_wait,
             'departure_time': start.astimezone(IST).strftime('%H:%M'),
             'arrival_time': arrival.astimezone(IST).strftime('%H:%M'),
+            'departure_iso': start.astimezone(IST).isoformat(), 'arrival_iso': arrival.astimezone(IST).isoformat(),
+            'uses_metro': any(str(leg.get('mode') or '').upper() in METRO_MODES for leg in buses),
             'coordinates': coords, 'geometry_source': 'otp', 'segments': segments,
             'transfer_stops': [leg['from']['name'] for leg in buses[1:]],
             'instructions': instructions, 'legs': journey_legs,
@@ -438,7 +445,7 @@ def _add_stretch_lines(database, routes, excluded):
     with closing(conn):
         for route in routes:
             for leg in route.get('legs', []):
-                if not leg.get('transit'):
+                if not leg.get('transit') or leg.get('role') == 'metro':
                     continue
                 try:
                     a, b = leg['from'], leg['to']
@@ -560,6 +567,11 @@ def plan_journey(database, origin_id, destination_id, profile=None,
     _mark_backtracking(found, origin, destination)
     routes = _rank(found, profile.get('preference', 'fastest'))
     _add_stretch_lines(database, routes, excluded)
+    try:
+        from transit import reliability
+        reliability.annotate(routes)
+    except Exception as error:   # statistics are optional; a journey must never fail because of them
+        print(f'[Reliability] skipped: {type(error).__name__}: {error}', flush=True)
     errors = plan.get('routingErrors', [])
     if routes:
         fallback = None

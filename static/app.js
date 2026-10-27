@@ -125,7 +125,7 @@
         if (banner) banner.hidden = true;
     }
 
-    const APP_BUILD = "2026-10-26-dock-2";   // must match BUILD in app.py
+    const APP_BUILD = "2026-10-27-features-2";   // must match BUILD in app.py
 
     async function checkHealth() {
         try {
@@ -391,6 +391,7 @@
         }
 
         state[markerKey] = createMarker(type, stop);
+        renderPlaceChips();
     }
 
     function clearTransferMarkers() {
@@ -1043,8 +1044,12 @@
             const list = stops.length > 2
                 ? `<details class="leg-stops"><summary>All ${stops.length} stops in order</summary><ol>${stops.map((stop) => `<li><span>${escapeHtml(stop.stop_name)}</span><time>${escapeHtml(stop.time || "")}</time></li>`).join("")}</ol></details>`
                 : "";
-            return `<li class="leg bus"><span class="leg-icon" aria-hidden="true">🚌</span><div>` +
-                `<div class="leg-main"><strong>${escapeHtml(leg.route_name)}</strong>${leg.headsign ? ` toward ${escapeHtml(leg.headsign)}` : ""}</div>` +
+            const metro = leg.role === "metro";
+            const color = /^#[0-9A-Fa-f]{6}$/.test(leg.line_color || "") ? leg.line_color : "";
+            const reliable = leg.reliability?.text
+                ? `<div class="leg-detail leg-reliability" title="${escapeHtml(leg.reliability.source || "")}">📊 ${escapeHtml(leg.reliability.text)}</div>` : "";
+            return `<li class="leg ${metro ? "metro" : "bus"}"><span class="leg-icon" aria-hidden="true">${metro ? "🚇" : "🚌"}</span><div>` +
+                `<div class="leg-main">${metro ? `<span class="metro-line"${color ? ` style="--line:${color}"` : ""}>${escapeHtml(tr("Metro"))}</span> ` : ""}<strong>${escapeHtml(leg.route_name)}</strong>${leg.headsign ? ` toward ${escapeHtml(leg.headsign)}` : ""}</div>` + reliable +
                 `<div class="leg-detail">${escapeHtml(wait)}Board at <b>${escapeHtml(leg.from?.name || "the stop")}</b> · scheduled ${escapeHtml(leg.departure_time || "—")}</div>` +
                 `<div class="leg-detail">Get down at <b>${escapeHtml(leg.to?.name || "the stop")}</b> · scheduled ${escapeHtml(leg.arrival_time || "—")} (${escapeHtml(minutesText(leg.duration_minutes))}${count ? `, ${count} stop${count === 1 ? "" : "s"}` : ""})</div>` +
                 `${list}</div></li>`;
@@ -1101,17 +1106,26 @@
             ? `Get down at ${route.final_walk_from}; the requested stop is about ${route.final_walk_distance_m ?? "?"} m away.`
             : "";
         const source = route.transit === false ? "Walking route · street network"
+            : route.uses_metro ? "Scheduled metro and buses · road-based walking"
             : route.schedule_based === false ? "Live estimate"
             : route.geometry_source === "otp" ? "Scheduled buses · road-based walking"
             : route.geometry_source === "gtfs_shape" ? "Scheduled GTFS route alignment"
             : "Scheduled GTFS stop sequence · road geometry unavailable";
 
         const busLegs = (route.legs || []).filter((leg) => leg.transit && leg.route_name);
+        // Measured from BMTC's own data (only present after enough days of live checks).
+        const learnedLeg = busLegs.find(leg => leg.reliability?.text);
+        const learned = learnedLeg?.reliability;
+        const learnedShort = !learned ? "" : Math.abs(learned.typical_delay_minutes) <= 2
+            ? tr("{line} usually on time", { line: learned.route })
+            : learned.typical_delay_minutes > 0 ? tr("{line} usually ~{min} min late", { line: learned.route, min: learned.typical_delay_minutes })
+                : tr("{line} usually ~{min} min early", { line: learned.route, min: -learned.typical_delay_minutes });
         const detourNote = route.detour === undefined ? routeDetourNote(route) : "";
         const stretchNotes = busLegs.filter(leg => leg.also_served_by?.length).map(leg =>
             `${busLegs.length > 1 ? `${leg.from?.name || "Stop"} → ${leg.to?.name || "stop"}: ` : ""}${leg.also_served_by.join(", ")} also go${leg.also_served_by.length === 1 ? "es" : ""} there`);
+        const liveLegs = busLegs.filter(leg => leg.role !== "metro");     // BMTC's live feed has no metro trains
         const trackTargets = route.transit === false ? [] : busLegs.length
-            ? busLegs.map((leg) => ({ number: leg.route_name, from: leg.from, to: leg.to }))
+            ? liveLegs.map((leg) => ({ number: leg.route_name, from: leg.from, to: leg.to }))
             : [...new Set(numbers)].map((number) => ({ number, from: null, to: null }));
         const point = (place, prefix) => place && Number.isFinite(Number(place.lat)) && Number.isFinite(Number(place.lon))
             ? `data-${prefix}-lat="${Number(place.lat)}" data-${prefix}-lon="${Number(place.lon)}" data-${prefix}-name="${escapeHtml(place.name || "stop")}"`
@@ -1124,6 +1138,10 @@
             </div>
             <div class="route-subline">${escapeHtml(leaveText)} · ${escapeHtml(minutesText(trip))} door to door</div>
             <button type="button" class="start-journey-button">▶ Start journey</button>
+            <div class="card-tools">
+                ${leaveSchedule(route)?.possible ? `<button type="button" class="card-tool remind">🔔 ${escapeHtml(tr("Remind me to leave"))}</button>` : ""}
+                <button type="button" class="card-tool share">↗ ${escapeHtml(tr("Share"))}</button>
+            </div>
 
             <div class="route-description">
                 <strong>${escapeHtml(numbers.join("  →  "))}</strong>
@@ -1135,6 +1153,7 @@
             <div class="route-metrics">
                 <span class="route-metric">🔄 ${escapeHtml(String(transfers))} transfer${transfers === 1 ? "" : "s"}</span>
                 <span class="route-metric">🚶 ${escapeHtml(walkingText)}</span>
+                ${learned ? `<span class="route-metric reliability" title="${escapeHtml(learned.text)}">📊 ${escapeHtml(learnedShort)}</span>` : ""}
                 ${waitText ? `<span class="route-metric">${escapeHtml(waitText)}</span>` : ""}
             </div>
 
@@ -1157,6 +1176,12 @@
             event.stopPropagation();
             setRoutesExpanded(true);
             setTimeout(() => card.scrollIntoView?.({block: "nearest", behavior: "smooth"}), 420);
+        });
+        card.querySelector(".card-tool.remind")?.addEventListener("click", (event) => { event.stopPropagation(); setReminderFor(route); });
+        card.querySelector(".card-tool.share")?.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const firstBus = (route.legs || []).find(leg => leg.transit && leg.role !== "metro");
+            shareTrip(route, { bus: firstBus?.route_name || "" });
         });
         const startButton = card.querySelector(".start-journey-button");
         startButton?.addEventListener("click", (event) => {
@@ -1261,6 +1286,7 @@
             routeResults.appendChild(createFallbackCard(result));
             return;
         }
+        rememberTrip(state.origin, state.destination);
 
         if (routes.some(route => route.transit !== false && routeLiveScope(route).lines.length)) {
             const liveCard = document.createElement("article");
@@ -1584,7 +1610,9 @@
                     destination: context(state.destination),
                     preference: state.selectedPreference,
                     depart_at: state.departAt || undefined,
-                    history
+                    history,
+                    saved: savedForAssistant(),
+                    lang: state.lang === "kn" ? "kn" : undefined
                 })
             }, 40000);
             const data = result.data;
@@ -1769,7 +1797,8 @@
         }
 
         const recognition = new SpeechRecognition();
-        recognition.lang = "en-IN";
+        recognition.lang = state.lang === "kn" ? "kn-IN" : "en-IN";
+        state.voice = recognition;
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;
 
@@ -1894,7 +1923,7 @@
         return 2 * R * Math.asin(Math.sqrt(h));
     }
 
-    const stepCache = new WeakMap();
+    let stepCache = new WeakMap();
 
     // Guidance steps derived from the planned legs. A bus is two steps: "board" (wait at the
     // stop) and "ride" (stay on until the alighting stop), so live tracking and GPS hints
@@ -1906,30 +1935,34 @@
         const steps = [];
         legs.forEach((leg, legIndex) => {
             if (leg.transit) {
-                const name = leg.route_name || "bus";
+                const metro = leg.role === "metro";
+                const name = leg.route_name || (metro ? "metro" : "bus");
                 const count = Number(leg.stop_count);
+                const from = leg.from?.name || tr("the stop"), to = leg.to?.name || tr("your stop");
+                const vars = { name, from, to, headsign: leg.headsign || "", time: leg.departure_time || "—", arrive: leg.arrival_time || "—",
+                    count, min: leg.duration_minutes, also: (leg.also_served_by || []).join(", ") };
                 steps.push({
                     kind: "board", legIndex, leg, target: leg.from,
-                    title: `Board ${name}${leg.headsign ? ` → ${leg.headsign}` : ""}`,
-                    short: `Board ${name} at ${leg.from?.name || "the stop"}`,
-                    detail: `Be at ${leg.from?.name || "the stop"} before the scheduled ${leg.departure_time || "departure"}. ` +
-                        (leg.also_served_by?.length ? `${leg.also_served_by.join(", ")} also go${leg.also_served_by.length === 1 ? "es" : ""} to ${leg.to?.name || "your stop"}, so take whichever comes first. ` : "") +
-                        `Check the bus number and destination board. Times are from the timetable, not live.`
+                    title: (metro ? tr("Board the metro: {name}", vars) : tr("Board {name}", vars)) + (leg.headsign ? ` → ${leg.headsign}` : ""),
+                    short: metro ? tr("Board the metro {name} at {from}", vars) : tr("Board {name} at {from}", vars),
+                    detail: tr("Be at {from} before the scheduled {time}.", vars) + " " +
+                        (leg.also_served_by?.length && !metro ? tr("{also} also go to {to}, so take whichever comes first.", vars) + " " : "") +
+                        (metro ? tr("Check the line colour and the direction board. Times are from the timetable, not live.")
+                            : tr("Check the bus number and destination board. Times are from the timetable, not live."))
                 });
                 steps.push({
                     kind: "ride", legIndex, leg, target: leg.to,
-                    title: `Ride ${name} to ${leg.to?.name || "your stop"}`,
-                    short: `Ride ${name} to ${leg.to?.name || "your stop"}`,
-                    detail: `${Number.isFinite(count) && count > 0 ? `${count} stop${count === 1 ? "" : "s"} · ` : ""}about ${leg.duration_minutes} min. ` +
-                        `Get down at ${leg.to?.name || "your stop"} (scheduled ${leg.arrival_time || "—"}). ` +
-                        `You are not told automatically when to get off: watch the stop names.`
+                    title: tr("Ride {name} to {to}", vars),
+                    short: tr("Ride {name} to {to}", vars),
+                    detail: (Number.isFinite(count) && count > 0 ? tr("{count} stops", vars) + " · " : "") + tr("about {min} min.", vars) + " " +
+                        tr("Get down at {to} (scheduled {arrive}).", vars)
                 });
             } else if (!leg.trivial) {
-                const title = leg.role === "egress_walk" ? "Walk to your destination"
-                    : leg.role === "transfer_walk" ? "Walk to your next stop" : "Walk to the boarding stop";
+                const title = leg.role === "egress_walk" ? tr("Walk to your destination")
+                    : leg.role === "transfer_walk" ? tr("Walk to your next stop") : tr("Walk to the boarding stop");
                 steps.push({
                     kind: "walk", legIndex, leg, target: leg.to, title,
-                    short: `Walk to ${leg.to?.name || "the next stop"}`,
+                    short: tr("Walk to {to}", { to: leg.to?.name || tr("the next stop") }),
                     detail: leg.instruction || `${leg.from?.name || "Start"} → ${leg.to?.name || "next stop"}. ${leg.duration_minutes} min · ${leg.distance_m} m.`
                 });
             }
@@ -1938,9 +1971,9 @@
             const last = legs[legs.length - 1];
             steps.push({
                 kind: "arrive", legIndex: legs.length - 1, leg: last, target: last.to,
-                title: "Arrive at your destination",
-                short: `Arrive: ${last.to?.name || "destination"}`,
-                detail: "Have you reached your destination? Tap Finish to close guidance."
+                title: tr("Arrive at your destination"),
+                short: tr("Arrive: {to}", { to: last.to?.name || tr("destination") }),
+                detail: tr("Have you reached your destination? Tap Finish to close guidance.")
             });
         }
         stepCache.set(route, steps);
@@ -1969,7 +2002,7 @@
             const step = guideSteps(route)[state.journey.stepIndex];
             if (step) from = step.kind === "ride" ? step.legIndex + 1 : step.kind === "arrive" ? legs.length : step.legIndex;
         }
-        const nextBus = legs.slice(from).find((leg) => leg.transit && leg.route_name);
+        const nextBus = legs.slice(from).find((leg) => leg.transit && leg.route_name && leg.role !== "metro");
         if (!nextBus && legs.length) return { lines: [], boardingStop: null, alightStop: null, key: "" };
         const fallback = route?.transit === false ? [] : (route?.route_numbers || []);
         // The planned bus first, then any other bus number the timetable runs over the same stretch
@@ -2005,6 +2038,7 @@
         const journey = state.journey;
         journey.session++;
         $("journeyGuide").hidden = true;
+        hideGuideBanner(true);
         if (journey.watchId !== null) {
             navigator.geolocation?.clearWatch(journey.watchId);
         }
@@ -2541,6 +2575,14 @@
             $("liveBusStatus").textContent = status;
             $("liveBusMeta").textContent = meta.join(" · ");
             live.hasResult = true;
+            live.lastShown = shown;
+            live.lastCheckedAt = Date.now();
+            const learned = mainResults.map(item => item.reliability).find(Boolean);
+            if ($("liveReliability")) {
+                $("liveReliability").textContent = learned?.text ? `📊 ${learned.text}` : "";
+                $("liveReliability").hidden = !learned?.text;
+            }
+            if (state.journey.active) checkMissedBus();
             $("liveBusFit").hidden = shown.length === 0;
             if (!shown.some(bus => liveBusKey(bus) === live.selectedBusId && bus.freshness === "fresh")) {
                 live.selectedBusId = null;
@@ -2766,7 +2808,12 @@
         const steps = guideSteps(route);
         const step = steps[stepIndex];
         if (!step) return { title: "Follow your journey", detail: "See the route instructions below.", gps: "Waiting for location…" };
-        const detail = `Step ${stepIndex + 1} of ${steps.length}. ${step.detail}`;
+        let detail = `${tr("Step {n} of {total}.", { n: stepIndex + 1, total: steps.length })} ${step.detail}`;
+        if (step.kind === "ride") {
+            detail += " " + (state.journey.alertsOn && navigator.geolocation
+                ? tr("You will get an alert one stop before {to} (needs GPS). Keep an eye on the stop names too.", { to: step.leg?.to?.name || tr("your stop") })
+                : tr("Stop alerts are off: watch the stop names."));
+        }
         let gps = "Waiting for your location…";
         if (position) {
             const accuracy = Number(position.coords.accuracy);
@@ -2799,12 +2846,12 @@
             ? journey.route.route_numbers.join(" → ") : "Selected journey";
         const list = steps.map((step, index) =>
             `<li class="${index === journey.stepIndex ? "current" : index < journey.stepIndex ? "done" : ""}">${escapeHtml(step.short)}</li>`).join("");
-        $("guideRouteSummary").innerHTML = `<strong>Route: ${escapeHtml(names)}</strong>${list ? `<ol>${list}</ol>` : ""}`;
+        $("guideRouteSummary").innerHTML = `<strong>${escapeHtml(tr("Route:"))} ${escapeHtml(names)}</strong>${list ? `<ol>${list}</ol>` : ""}`;
         const last = steps.length > 0 && journey.stepIndex >= steps.length - 1;
         $("guidePrev").disabled = journey.stepIndex === 0;
         $("guideNext").disabled = steps.length === 0;
-        $("guideNext").textContent = last ? "Finish" : "Next step";
-        $("guideFollow").textContent = !journey.lastPosition ? "Show my route" : journey.follow ? "Following you" : "Recenter";
+        $("guideNext").textContent = last ? tr("Finish") : tr("Next step");
+        $("guideFollow").textContent = !journey.lastPosition ? tr("Show my route") : journey.follow ? tr("Following you") : tr("Recenter");
     }
 
     function focusGuideStep(step) {
@@ -2847,9 +2894,11 @@
             return;
         }
         journey.stepIndex = Math.max(0, next);
+        hideGuideBanner();
         renderJourneyGuide();
         focusGuideStep(steps[journey.stepIndex]);
         syncGuideLive();
+        checkMissedBus();
     }
 
     function updateJourneyProgress(position) {
@@ -2865,6 +2914,8 @@
         journey.lastPosition = position;
         journey.gpsError = "";
         renderJourneyGuide();
+        checkAlightAlert();
+        checkMissedBus();
 
         if (!journey.marker) {
             const element = document.createElement("div");
@@ -2898,6 +2949,9 @@
         state.journey.routeIndex = 0;
         state.journey.stepIndex = 0;
         state.journey.follow = true;
+        state.journey.alerted = new Set();
+        hideGuideBanner(true);
+        if (state.journey.alertsOn) askNotificationPermission();
         state.journey.gpsError = navigator.geolocation ? "Waiting for device location…" : "Device location is unavailable. Use Next step as you travel.";
         hideRoutePanel();
         $("liveBusPanel").classList.remove("with-routes");
@@ -2916,6 +2970,7 @@
             activeButton.textContent = "■ Stop journey guidance";
         }
         syncGuideLive();
+        checkMissedBus();
 
         showStatus(guideSteps(route).length
             ? "Journey guidance started. Use Next step to confirm boarding and transfers."
@@ -3015,6 +3070,7 @@
         state.origin = null;
         state.destination = null;
         state.lastPlan = null;
+        renderPlaceChips();
         syncExplainButton();
         if ($("routeMeta")) $("routeMeta").textContent = "";
 
@@ -3497,10 +3553,6 @@
         $("liveBusRefresh")?.addEventListener("click", () => {
             if (state.liveBus.route) refreshLiveBuses(state.liveBus.session, true);
         });
-        $("profileBtn")?.addEventListener("click", () => {
-            document.querySelector('.quick-chip')?.focus();
-            showStatus("Choose Less walking, Fewer transfers or Fastest below Find routes.");
-        });
         $("guidePrev")?.addEventListener("click", () => goToGuideStep(-1));
         $("guideNext")?.addEventListener("click", () => goToGuideStep(1));
         $("departInput")?.addEventListener("change", (event) => setDepartAt(event.target.value));
@@ -3633,6 +3685,649 @@
         });
     }
 
+    // =====================================================================================
+    // Everyday features: saved places & recent trips, get-off alerts, leave reminders,
+    // "missed it?" re-planning, trip sharing, language, installable app.
+    // Everything here keeps the app's rule: timetable times are labelled as timetable times, and a
+    // live statement is made only from BMTC's own live data.
+    // =====================================================================================
+
+    // ---- Language ----
+    function tr(text, vars) {
+        let out = String(text);
+        if (state.lang === "kn") {
+            const table = (typeof window !== "undefined" && window.BT_I18N && window.BT_I18N.kn) || {};
+            if (table[out]) out = table[out];
+        }
+        if (vars) Object.keys(vars).forEach(key => { out = out.split(`{${key}}`).join(String(vars[key] ?? "")); });
+        return out;
+    }
+
+    function applyLanguage(lang) {
+        state.lang = lang === "kn" ? "kn" : "en";
+        store.set("bt.lang", state.lang);
+        if (typeof document === "undefined" || !document.querySelectorAll) return;
+        try { document.documentElement.lang = state.lang; } catch { /* ignore */ }
+        document.querySelectorAll("[data-i18n]").forEach(el => {
+            if (el.dataset.i18nEn === undefined) el.dataset.i18nEn = el.textContent.trim();
+            el.textContent = tr(el.dataset.i18nEn);
+        });
+        document.querySelectorAll("[data-i18n-ph]").forEach(el => {
+            if (el.dataset.i18nPhEn === undefined) el.dataset.i18nPhEn = el.getAttribute("placeholder") || "";
+            el.setAttribute("placeholder", tr(el.dataset.i18nPhEn));
+        });
+        document.querySelectorAll("[data-i18n-title]").forEach(el => {
+            if (el.dataset.i18nTitleEn === undefined) el.dataset.i18nTitleEn = el.getAttribute("title") || "";
+            el.setAttribute("title", tr(el.dataset.i18nTitleEn));
+            el.setAttribute("aria-label", tr(el.dataset.i18nTitleEn));
+        });
+        if (state.voice) state.voice.lang = state.lang === "kn" ? "kn-IN" : "en-IN";
+        stepCache = new WeakMap();          // step texts are built in the chosen language
+        syncAlertToggle();
+        renderPlaceChips();
+        if (state.journey.active) renderJourneyGuide();
+    }
+
+    // ---- Small, failure-proof browser storage (per device; never required for the app to work) ----
+    const store = {
+        get(key, fallback) {
+            try { const raw = window.localStorage?.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
+        },
+        set(key, value) {
+            try { window.localStorage?.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+        },
+        remove(key) { try { window.localStorage?.removeItem(key); } catch { /* ignore */ } }
+    };
+    const SAVED_KEY = "bt.saved.v1", RECENT_KEY = "bt.recent.v1", REMINDER_KEY = "bt.reminder.v1";
+    const inBengaluru = (lat, lon) => lat >= 12.65 && lat <= 13.45 && lon >= 77.20 && lon <= 78.00;
+
+    function placeRecord(stop) {
+        const lat = Number(stop?.lat ?? stop?.stop_lat), lon = Number(stop?.lon ?? stop?.stop_lon);
+        const name = String(stop?.name ?? stop?.stop_name ?? "").trim().slice(0, 120);
+        if (!name || !Number.isFinite(lat) || !Number.isFinite(lon) || !inBengaluru(lat, lon)) return null;
+        const id = String(stop?.id ?? stop?.stop_id ?? "");
+        const point = !!stop?.is_map_point || !id || id.startsWith("point-");
+        return { id: point ? "" : id, name, lat, lon, is_map_point: point };
+    }
+
+    function savedPlaces() {
+        const list = store.get(SAVED_KEY, []);
+        return Array.isArray(list) ? list.filter(item => item && item.label && placeRecord(item)).slice(0, 12) : [];
+    }
+
+    function savePlace(label, stop) {
+        const record = placeRecord(stop);
+        const clean = String(label || "").trim().slice(0, 40);
+        if (!record || !clean) return false;
+        const others = savedPlaces().filter(item => item.label.toLowerCase() !== clean.toLowerCase());
+        store.set(SAVED_KEY, [{ label: clean, ...record }, ...others].slice(0, 12));
+        renderPlaceChips();
+        return true;
+    }
+
+    function removeSavedPlace(label) {
+        store.set(SAVED_KEY, savedPlaces().filter(item => item.label !== label));
+        renderPlaceChips();
+    }
+
+    function recentTrips() {
+        const list = store.get(RECENT_KEY, []);
+        return Array.isArray(list) ? list.filter(trip => trip && placeRecord(trip.from) && placeRecord(trip.to)).slice(0, 6) : [];
+    }
+
+    function rememberTrip(origin, destination) {
+        const from = placeRecord(origin), to = placeRecord(destination);
+        if (!from || !to) return;
+        const same = (a, b) => a.name === b.name && Math.abs(a.lat - b.lat) < 1e-4 && Math.abs(a.lon - b.lon) < 1e-4;
+        // A point from GPS ("My location ±20 m") changes every time: keep it out of the list.
+        if (/^My location/.test(from.name) || /^My location/.test(to.name)) return;
+        const rest = recentTrips().filter(trip => !(same(trip.from, from) && same(trip.to, to)));
+        store.set(RECENT_KEY, [{ from, to, at: Date.now() }, ...rest].slice(0, 6));
+        renderPlaceChips();
+    }
+
+    function savedForAssistant() {
+        return savedPlaces().map(item => ({ label: item.label, id: item.is_map_point ? "" : item.id, name: item.name,
+            lat: item.lat, lon: item.lon, is_map_point: item.is_map_point }));
+    }
+
+    const placeIcon = label => /^home$/i.test(label) ? "🏠" : /^work$/i.test(label) ? "💼" : "⭐";
+
+    function setEndpoint(kind, record) {
+        const stop = normalizeStop({ ...record, id: record.id || `point-${kind}`, is_map_point: record.is_map_point });
+        if (!stop) return null;
+        invalidateJourney();
+        state[kind] = stop;
+        (kind === "origin" ? originInput : destinationInput).value = stop.name;
+        updateMarker(kind, stop);
+        return stop;
+    }
+
+    function goToSavedPlace(item) {
+        if (!setEndpoint("destination", item)) return;
+        if (state.origin) { planJourney(); return; }
+        // No start yet: like "take me home", start from where the traveller is.
+        startFromMyLocation({ set textContent(text) { showStatus(text); } });
+    }
+
+    function renderPlaceChips() {
+        const box = typeof document !== "undefined" ? $("placeChips") : null;
+        if (!box) return;
+        const saved = savedPlaces();
+        const recent = recentTrips();
+        const canSave = !!(placeRecord(state.origin) || placeRecord(state.destination));
+        const chips = saved.map((item, index) =>
+            `<button type="button" class="place-chip" data-saved="${index}" title="${escapeHtml(tr("Go to {name}", { name: item.name }))}">${placeIcon(item.label)} ${escapeHtml(tr(item.label))}</button>`);
+        if (recent.length) chips.push(`<button type="button" class="place-chip" data-menu="recent">🕘 ${escapeHtml(tr("Recent"))}</button>`);
+        if (canSave) chips.push(`<button type="button" class="place-chip save" data-menu="save">☆ ${escapeHtml(tr("Save place"))}</button>`);
+        if (!saved.length && !recent.length && !canSave) chips.push(`<span class="place-hint">${escapeHtml(tr("Save Home and Work for one-tap trips."))}</span>`);
+        box.innerHTML = chips.join("");
+        box.hidden = false;
+    }
+
+    function closeQuickMenu() {
+        const menu = $("quickMenu");
+        if (menu) { menu.hidden = true; menu.innerHTML = ""; }
+    }
+
+    function openQuickMenu(kind, anchor) {
+        const menu = $("quickMenu");
+        if (!menu) return;
+        let html = "";
+        if (kind === "recent") {
+            html = `<div class="qm-title">${escapeHtml(tr("Recent trips"))}</div>` + recentTrips().map((trip, index) =>
+                `<button type="button" class="qm-item" data-recent="${index}">${escapeHtml(trip.from.name)} → ${escapeHtml(trip.to.name)}</button>`).join("") +
+                `<button type="button" class="qm-item subtle" data-clear-recent="1">${escapeHtml(tr("Clear recent trips"))}</button>`;
+        } else if (kind === "save") {
+            const rows = [["origin", state.origin], ["destination", state.destination]].filter(([, stop]) => placeRecord(stop));
+            html = `<div class="qm-title">${escapeHtml(tr("Save a place on this device"))}</div>` + rows.map(([which, stop]) =>
+                `<div class="qm-row"><span>${escapeHtml(stop.name)}</span><span class="qm-actions">` +
+                ["Home", "Work"].map(label => `<button type="button" data-save="${which}" data-label="${label}">${placeIcon(label)} ${escapeHtml(tr(label))}</button>`).join("") +
+                `<button type="button" data-save="${which}" data-label="">⭐ ${escapeHtml(tr("Favourite"))}</button></span></div>`).join("") +
+                `<p class="qm-note">${escapeHtml(tr("Saved only in this browser. Say \"take me home\" to the assistant once Home is saved."))}</p>`;
+        } else if (kind === "more") {
+            const saved = savedPlaces();
+            html = `<div class="qm-title">${escapeHtml(tr("Language"))}</div>` +
+                `<div class="qm-row"><span class="qm-actions"><button type="button" data-lang="en" aria-pressed="${state.lang !== "kn"}">English</button><button type="button" data-lang="kn" aria-pressed="${state.lang === "kn"}">ಕನ್ನಡ</button></span></div>` +
+                (state.installPrompt ? `<button type="button" class="qm-item" data-install="1">📲 ${escapeHtml(tr("Install as an app"))}</button>` : "") +
+                `<div class="qm-title">${escapeHtml(tr("Saved places"))}</div>` +
+                (saved.length ? saved.map(item => `<div class="qm-row"><span>${placeIcon(item.label)} ${escapeHtml(tr(item.label))} · ${escapeHtml(item.name)}</span><span class="qm-actions"><button type="button" data-remove="${escapeHtml(item.label)}" aria-label="${escapeHtml(tr("Remove {label}", { label: item.label }))}">✕</button></span></div>`).join("")
+                    : `<p class="qm-note">${escapeHtml(tr("None yet. Choose a place in From or To, then tap ☆ Save place."))}</p>`) +
+                `<div class="qm-title">${escapeHtml(tr("Travel preference"))}</div><p class="qm-note">${escapeHtml(tr("Choose Less walking, Fewer transfers or Fastest below Find routes."))}</p>`;
+        }
+        menu.innerHTML = html;
+        menu.hidden = false;
+        menu.dataset.kind = kind;
+        try {
+            const box = anchor?.getBoundingClientRect?.();
+            if (box && kind === "more") { menu.style.top = `${Math.round(box.bottom + 8)}px`; menu.style.right = "16px"; menu.style.left = "auto"; }
+            else if (box) { menu.style.top = `${Math.round(box.bottom + 6)}px`; menu.style.left = `${Math.round(Math.max(8, Math.min(box.left, (window.innerWidth || 400) - 330)))}px`; menu.style.right = "auto"; }
+        } catch { /* positioning is cosmetic */ }
+    }
+
+    function setupPlaces() {
+        const box = $("placeChips"), menu = $("quickMenu");
+        box?.addEventListener("click", (event) => {
+            const chip = event.target?.closest?.("button");
+            if (!chip) return;
+            if (chip.dataset.saved !== undefined) { closeQuickMenu(); goToSavedPlace(savedPlaces()[Number(chip.dataset.saved)]); }
+            else if (chip.dataset.menu) {
+                if (!menu.hidden && menu.dataset.kind === chip.dataset.menu) closeQuickMenu(); else openQuickMenu(chip.dataset.menu, chip);
+            }
+        });
+        menu?.addEventListener("click", (event) => {
+            const button = event.target?.closest?.("button");
+            if (!button) return;
+            event.stopPropagation();
+            if (button.dataset.recent !== undefined) {
+                const trip = recentTrips()[Number(button.dataset.recent)];
+                closeQuickMenu();
+                if (trip && setEndpoint("origin", trip.from) && setEndpoint("destination", trip.to)) planJourney();
+            } else if (button.dataset.clearRecent) {
+                store.set(RECENT_KEY, []); closeQuickMenu(); renderPlaceChips();
+            } else if (button.dataset.save) {
+                const stop = state[button.dataset.save];
+                const label = button.dataset.label || String(stop?.name || "").replace(/\s*\(±.*$/, "").slice(0, 24);
+                if (savePlace(label, stop)) showStatus(tr("Saved {name} as {label}.", { name: stop.name, label: tr(label) }));
+                closeQuickMenu();
+            } else if (button.dataset.remove) {
+                removeSavedPlace(button.dataset.remove);
+                openQuickMenu("more", $("profileBtn"));
+            } else if (button.dataset.lang) {
+                applyLanguage(button.dataset.lang);
+                openQuickMenu("more", $("profileBtn"));
+            } else if (button.dataset.install && state.installPrompt) {
+                const prompt = state.installPrompt;
+                state.installPrompt = null;
+                closeQuickMenu();
+                prompt.prompt?.();
+            }
+        });
+        document.addEventListener?.("click", (event) => {
+            if (!menu || menu.hidden) return;
+            if (event.target?.closest?.("#quickMenu, #placeChips, #profileBtn")) return;
+            closeQuickMenu();
+        });
+        document.addEventListener?.("keydown", (event) => { if (event.key === "Escape") closeQuickMenu(); });
+        renderPlaceChips();
+    }
+
+    // ---- Alerts (vibration, system notification when allowed, and an on-screen banner) ----
+    async function askNotificationPermission() {
+        try {
+            if (typeof Notification !== "undefined" && Notification.permission === "default") await Notification.requestPermission();
+        } catch { /* some browsers only allow it from a click; the banner still works */ }
+    }
+
+    function notify(title, body, { urgent = false, tag = "bt" } = {}) {
+        try { navigator.vibrate?.(urgent ? [600, 200, 600, 200, 600] : [300, 150, 300]); } catch { /* not supported */ }
+        try {
+            if (typeof Notification !== "undefined" && Notification.permission === "granted" && document.hidden !== false) {
+                const options = { body, tag, renotify: true, icon: "/static/icons/icon-192.png" };
+                if (navigator.serviceWorker?.ready) navigator.serviceWorker.ready.then(reg => reg.showNotification(title, options)).catch(() => new Notification(title, options));
+                else new Notification(title, options);
+            }
+        } catch { /* the banner below is enough */ }
+    }
+
+    // ---- Get-off alert: one stop before the alighting stop, and again at it ----
+    // Pure: decides from the planned stop list and a GPS fix. Weak or old fixes never trigger it.
+    function alightAlert(route, stepIndex, position, now = Date.now()) {
+        const step = guideSteps(route)[stepIndex];
+        if (!step || step.kind !== "ride" || !position?.coords) return null;
+        const accuracy = Number(position.coords.accuracy);
+        if (!(accuracy <= 120) || now - Number(position.timestamp) > 45000) return null;
+        const leg = step.leg || {};
+        const target = leg.to || {};
+        const tlat = Number(target.lat), tlon = Number(target.lon);
+        if (!Number.isFinite(tlat) || !Number.isFinite(tlon)) return null;
+        const here = [Number(position.coords.longitude), Number(position.coords.latitude)];
+        const toTarget = haversineMeters(here, [tlon, tlat]);
+        const base = { stop: target.name || "your stop", legIndex: step.legIndex, meters: Math.round(toTarget) };
+        if (toTarget <= Math.max(120, accuracy)) return { ...base, level: "now" };
+        const stops = (Array.isArray(leg.stops) ? leg.stops : []).filter(s => Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lon)));
+        if (stops.length >= 3) {
+            let best = -1, bestDistance = Infinity;
+            stops.forEach((s, i) => {
+                const d = haversineMeters(here, [Number(s.lon), Number(s.lat)]);
+                if (d < bestDistance) { best = i; bestDistance = d; }
+            });
+            // At (or just past) the stop before yours, and actually on the bus's line.
+            if (best >= stops.length - 2 && bestDistance <= Math.max(350, accuracy * 2)) return { ...base, level: "soon" };
+            return null;
+        }
+        return toTarget <= 700 ? { ...base, level: "soon" } : null;
+    }
+
+    function checkAlightAlert() {
+        const journey = state.journey;
+        if (!journey.active || !journey.alertsOn) return;
+        const alert = alightAlert(journey.route, journey.stepIndex, journey.lastPosition);
+        if (!alert) return;
+        journey.alerted = journey.alerted || new Set();
+        const key = `${alert.legIndex}:${alert.level}`;
+        if (journey.alerted.has(key)) return;
+        journey.alerted.add(key);
+        if (alert.level === "now") journey.alerted.add(`${alert.legIndex}:soon`);
+        const text = alert.level === "now"
+            ? tr("Get off here: {stop}.", { stop: alert.stop })
+            : tr("Get ready: {stop} is next. Get off there.", { stop: alert.stop });
+        showGuideBanner(text, alert.level === "now" ? "urgent" : "info");
+        bannerData().key = `alight:${key}`;
+        notify(alert.level === "now" ? tr("Your stop") : tr("Next stop is yours"), text, { urgent: alert.level === "now", tag: "bt-alight" });
+    }
+
+    function bannerData() {
+        const banner = $("guideAlert");
+        if (!banner) return {};
+        if (!banner.dataset) banner.dataset = {};
+        return banner.dataset;
+    }
+
+    function hideGuideBanner(forget = false) {
+        const banner = $("guideAlert");
+        if (!banner) return;
+        banner.hidden = true;
+        bannerData().key = "";
+        if (forget) bannerData().dismissed = "";
+    }
+
+    function showGuideBanner(text, kind = "info", action = null) {
+        const banner = $("guideAlert");
+        if (!banner) return;
+        banner.className = `guide-alert ${kind}`;
+        banner.innerHTML = `<span>${escapeHtml(text)}</span>` +
+            (action ? `<button type="button" class="guide-alert-action">${escapeHtml(action.label)}</button>` : "") +
+            `<button type="button" class="guide-alert-close" aria-label="${escapeHtml(tr("Dismiss"))}">✕</button>`;
+        banner.hidden = false;
+        // An alert must be seen: open the journey panel at its top (on a phone: its tab, and lift the sheet).
+        const guide = $("journeyGuide");
+        if (guide?.classList?.contains("folded")) foldDockPanel(guide, false);
+        if (guide) guide.scrollTop = 0;
+        if (phoneLayout()) {
+            setDockTab("guide");
+            if ($("sideDock")?.classList?.contains("peek")) setDockHeight(dockSnapHeights().half);
+        }
+        banner.querySelector?.(".guide-alert-action")?.addEventListener("click", action?.run || (() => {}));
+        banner.querySelector?.(".guide-alert-close")?.addEventListener("click", () => { banner.hidden = true; bannerData().dismissed = bannerData().key || ""; });
+    }
+
+    function syncAlertToggle() {
+        const button = $("guideAlertToggle");
+        if (!button) return;
+        button.textContent = state.journey.alertsOn ? tr("🔔 Stop alerts on") : tr("🔕 Stop alerts off");
+        button.setAttribute("aria-pressed", String(!!state.journey.alertsOn));
+    }
+
+    // ---- Missed it? ----
+    // Pure: the bus the traveller is about to board is past its timetable time by more than the grace
+    // period, and BMTC's live data (when we have it) does not show one of those buses coming soon.
+    const MISSED_GRACE_MINUTES = 5;
+    function missedBusCheck(route, stepIndex, now = Date.now(), comingWithin = null) {
+        const steps = guideSteps(route);
+        const step = steps[stepIndex];
+        if (!step || !(step.kind === "board" || step.kind === "walk")) return null;
+        const legs = route?.legs || [];
+        const leg = step.kind === "board" ? step.leg : legs.slice(step.legIndex + 1).find(l => l.transit);
+        if (!leg || leg.role === "metro") return null;
+        const due = Date.parse(leg.departure_iso || "");
+        if (!Number.isFinite(due)) return null;
+        const minutesLate = Math.floor((now - due) / 60000);
+        if (minutesLate < MISSED_GRACE_MINUTES) return null;
+        if (Number.isFinite(comingWithin) && comingWithin <= 15) return null;   // BMTC shows one coming: not missed
+        return { leg, line: leg.route_name, stop: leg.from?.name || "the stop", scheduled: leg.departure_time,
+                 minutesLate, liveKnown: comingWithin === "none" };
+    }
+
+    // Minutes until the soonest bus of these lines that BMTC shows heading to the boarding stop, from
+    // the last live check (only when it is recent). "none" = checked, nothing coming; null = unknown.
+    function liveComingWithin(lines) {
+        const live = state.liveBus;
+        if (!live.lastShown || !live.lastCheckedAt || Date.now() - live.lastCheckedAt > 180000) return null;
+        const wanted = new Set((lines || []).map(name => String(name || "").toUpperCase().split(" ")[0]));
+        let soonest = null;
+        live.lastShown.forEach(bus => {
+            if (bus.group === "alternate" || bus.relevance !== "approaching") return;
+            if (!wanted.has(String(bus.route || "").toUpperCase().split(" ")[0])) return;
+            const minutes = boardEtaMinutes(bus);
+            if (minutes !== null && (soonest === null || minutes < soonest)) soonest = minutes;
+        });
+        return soonest === null ? "none" : soonest;
+    }
+
+    function checkMissedBus() {
+        const journey = state.journey;
+        if (!journey.active) return;
+        const step = guideSteps(journey.route)[journey.stepIndex];
+        const leg = step?.kind === "board" ? step.leg : (journey.route?.legs || []).slice((step?.legIndex ?? 0) + 1).find(l => l.transit);
+        const lines = leg ? [leg.route_name, ...(leg.also_served_by || [])] : [];
+        const missed = missedBusCheck(journey.route, journey.stepIndex, Date.now(), liveComingWithin(lines));
+        const banner = $("guideAlert");
+        const data = bannerData();
+        if (!missed) {
+            if (banner && String(data.key || "").startsWith("missed")) hideGuideBanner();
+            return;
+        }
+        const key = `missed:${missed.line}:${missed.scheduled}`;
+        if (banner && (data.dismissed === key || (data.key === key && !banner.hidden))) return;
+        const text = missed.liveKnown
+            ? tr("Missed it? The {time} {line} from {stop} was due {min} min ago, and BMTC shows none of these buses coming soon.", { time: missed.scheduled, line: missed.line, stop: missed.stop, min: missed.minutesLate })
+            : tr("Missed it? The {time} {line} from {stop} was due {min} min ago. If it has not come, look at the next options.", { time: missed.scheduled, line: missed.line, stop: missed.stop, min: missed.minutesLate });
+        showGuideBanner(text, "warn", { label: tr("Show next options"), run: () => replanAfterMissed(missed) });
+        bannerData().key = key;
+    }
+
+    // New plan from the boarding stop (or from the traveller's GPS position when it is reliable and
+    // away from that stop) to the same destination, leaving now.
+    function replanAfterMissed(missed) {
+        const journey = state.journey;
+        const from = missed?.leg?.from;
+        const position = journey.lastPosition;
+        let start = null;
+        if (position && position.coords.accuracy <= 60 && Date.now() - position.timestamp < 60000 && from &&
+            haversineMeters([position.coords.longitude, position.coords.latitude], [Number(from.lon), Number(from.lat)]) > 300) {
+            start = { id: "point-origin", is_map_point: true, name: tr("My location"), lat: position.coords.latitude, lon: position.coords.longitude };
+        } else if (from) {
+            const id = missed.leg.from_stop_id;
+            start = { id: id || "point-origin", is_map_point: !id, name: from.name, lat: Number(from.lat), lon: Number(from.lon) };
+        }
+        stopJourneyTracking();
+        if (state.departAt) setDepartAt("", { replan: false });
+        if (start) setEndpoint("origin", start);
+        showStatus(tr("Finding the next options from {stop}…", { stop: start?.name || tr("your start") }));
+        planJourney();
+    }
+
+    // ---- Leave-now reminder ----
+    // Pure: when to remind for a journey. The journey's start time (= when to start walking) comes
+    // from the timetable; a reminder is set a few minutes before it.
+    function leaveSchedule(route, now = Date.now(), before = 5) {
+        const leaveAt = Date.parse(route?.departure_iso || "");
+        if (!Number.isFinite(leaveAt)) return null;
+        const firstBus = (route.legs || []).find(leg => leg.transit) || null;
+        return { leaveAt, remindAt: Math.max(now, leaveAt - before * 60000), minutesUntil: Math.round((leaveAt - now) / 60000),
+                 possible: leaveAt - now > 60000, firstBus };
+    }
+
+    function reminderSummary(route) {
+        const firstBus = (route.legs || []).find(leg => leg.transit);
+        return {
+            leaveAt: Date.parse(route.departure_iso || ""), leaveText: route.departure_time,
+            line: firstBus?.route_name || "", lines: firstBus ? [firstBus.route_name, ...(firstBus.also_served_by || [])].slice(0, 4) : [],
+            stop: firstBus?.from?.name || "", stopLat: Number(firstBus?.from?.lat), stopLon: Number(firstBus?.from?.lon),
+            busTime: firstBus?.departure_time || "", metro: firstBus?.role === "metro",
+            title: `${state.origin?.name || ""} → ${state.destination?.name || ""}`
+        };
+    }
+
+    function clearReminder({ silent = false } = {}) {
+        (state.reminder?.timers || []).forEach(timer => clearTimeout(timer));
+        state.reminder = null;
+        store.remove(REMINDER_KEY);
+        renderReminderPill();
+        if (!silent) showStatus(tr("Reminder cancelled."));
+    }
+
+    function armReminder(info) {
+        (state.reminder?.timers || []).forEach(timer => clearTimeout(timer));
+        const now = Date.now();
+        if (!Number.isFinite(info.leaveAt) || info.leaveAt < now - 60000) { clearReminder({ silent: true }); return; }
+        const timers = [];
+        const before = Math.max(0, info.leaveAt - 5 * 60000 - now);
+        timers.push(setTimeout(() => fireReminder(info, false), before));
+        timers.push(setTimeout(() => fireReminder(info, true), Math.max(0, info.leaveAt - now)));
+        timers.push(setTimeout(() => clearReminder({ silent: true }), Math.max(0, info.leaveAt - now) + 10 * 60000));
+        state.reminder = { info, timers };
+        store.set(REMINDER_KEY, info);
+        renderReminderPill();
+    }
+
+    async function liveLineForReminder(info) {
+        // Only a statement BMTC's live data supports; otherwise nothing.
+        if (info.metro || !info.line || !Number.isFinite(info.stopLat)) return "";
+        try {
+            const query = new URLSearchParams({ q: info.line, stop_lat: String(info.stopLat), stop_lon: String(info.stopLon) });
+            const response = await fetch(`/api/bmtc/route?${query}`, { cache: "no-store" });
+            const data = await response.json();
+            const coming = (data.vehicles || []).filter(bus => bus.relevance === "approaching")
+                .map(bus => boardEtaMinutes(bus)).filter(minutes => minutes !== null).sort((a, b) => a - b);
+            return coming.length ? tr(" BMTC live: a {line} is about {min} min from {stop}.", { line: info.line, min: coming[0], stop: info.stop }) : "";
+        } catch { return ""; }
+    }
+
+    async function fireReminder(info, final) {
+        const live = await liveLineForReminder(info);
+        const body = final
+            ? tr("Time to leave for {line} at {stop} (timetable {time}).", { line: info.line || tr("your journey"), stop: info.stop || tr("your stop"), time: info.busTime || info.leaveText }) + live
+            : tr("Leave in about 5 min for {line} at {stop} (timetable {time}).", { line: info.line || tr("your journey"), stop: info.stop || tr("your stop"), time: info.busTime || info.leaveText }) + live;
+        notify(final ? tr("Time to leave") : tr("Leave soon"), body, { urgent: final, tag: "bt-leave" });
+        showStatus(body);
+        renderReminderPill(body);
+    }
+
+    function setReminderFor(route) {
+        const plan = leaveSchedule(route);
+        if (!plan?.possible) { showStatus(tr("This journey starts now, so there is nothing to remind you about."), true); return; }
+        askNotificationPermission();
+        armReminder(reminderSummary(route));
+        const at = new Date(Math.max(Date.now(), plan.leaveAt - 5 * 60000)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        showStatus(tr("Reminder set for {time}. Keep this page open (phones may pause background pages).", { time: at }));
+    }
+
+    function renderReminderPill(latest = "") {
+        const pill = typeof document !== "undefined" ? $("reminderPill") : null;
+        if (!pill) return;
+        const info = state.reminder?.info;
+        if (!info) { pill.hidden = true; pill.innerHTML = ""; return; }
+        const when = new Date(info.leaveAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        pill.innerHTML = `<span>🔔 ${escapeHtml(latest || tr("Leave by {time} for {line}", { time: when, line: info.line || tr("your journey") }))}</span><button type="button" aria-label="${escapeHtml(tr("Cancel reminder"))}">✕</button>`;
+        pill.hidden = false;
+        pill.querySelector("button")?.addEventListener("click", () => clearReminder());
+    }
+
+    function restoreReminder() {
+        const info = store.get(REMINDER_KEY, null);
+        if (info && Number.isFinite(info.leaveAt) && info.leaveAt > Date.now() - 60000) armReminder(info);
+        else store.remove(REMINDER_KEY);
+    }
+
+    // ---- Share my trip ----
+    const SHARE_PREFS = ["fastest", "less_walking", "fewer_transfers"];
+    function shareUrl(origin, destination, { departAt = "", preference = "", bus = "", base = "" } = {}) {
+        const from = placeRecord(origin), to = placeRecord(destination);
+        if (!from || !to) return "";
+        const params = new URLSearchParams();
+        const put = (key, place) => {
+            params.set(key, `${place.lat.toFixed(6)},${place.lon.toFixed(6)}`);
+            params.set(`${key}Name`, place.name);
+            if (!place.is_map_point && place.id) params.set(`${key}Id`, place.id);
+        };
+        put("from", from);
+        put("to", to);
+        if (/^\d{2}:\d{2}$/.test(departAt || "")) params.set("at", departAt);
+        if (preference && preference !== "fastest" && SHARE_PREFS.includes(preference)) params.set("pref", preference);
+        if (bus) params.set("bus", String(bus).slice(0, 30));
+        return `${base || (typeof location !== "undefined" ? location.origin : "")}/?${params.toString()}`;
+    }
+
+    // Pure: read a shared link. Anything malformed is ignored, never guessed.
+    function parseShareParams(search) {
+        let params;
+        try { params = new URLSearchParams(search); } catch { return null; }
+        const read = (key) => {
+            const match = String(params.get(key) || "").match(/^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/);
+            if (!match) return null;
+            const lat = Number(match[1]), lon = Number(match[2]);
+            const name = String(params.get(`${key}Name`) || "").trim().slice(0, 120);
+            if (!inBengaluru(lat, lon) || !name) return null;
+            const id = String(params.get(`${key}Id`) || "").trim().slice(0, 80);
+            return { id: id || `point-${key === "from" ? "origin" : "destination"}`, name, lat, lon, is_map_point: !id };
+        };
+        const origin = read("from"), destination = read("to");
+        if (!origin || !destination) return null;
+        const at = String(params.get("at") || "");
+        const pref = String(params.get("pref") || "");
+        const bus = String(params.get("bus") || "").trim();
+        return { origin, destination, departAt: /^([01]\d|2[0-3]):[0-5]\d$/.test(at) ? at : "",
+                 preference: SHARE_PREFS.includes(pref) ? pref : "", bus: /^[A-Za-z0-9][A-Za-z0-9 .-]{0,29}$/.test(bus) ? bus : "" };
+    }
+
+    function shareText(route) {
+        const numbers = (route?.route_numbers || []).join(" → ");
+        return tr("My trip: {from} → {to}. {lines}, leave {leave}, arrive {arrive} (BMTC timetable, not live).", {
+            from: state.origin?.name || "", to: state.destination?.name || "", lines: numbers || tr("Bus"),
+            leave: route?.departure_time || "—", arrive: route?.arrival_time || "—" });
+    }
+
+    async function shareTrip(route, { bus = "" } = {}) {
+        const url = shareUrl(state.origin, state.destination, { departAt: state.departAt, preference: state.selectedPreference, bus });
+        if (!url) { showStatus(tr("Choose a start and destination first."), true); return; }
+        const text = shareText(route);
+        try {
+            if (navigator.share) { await navigator.share({ title: tr("Bengaluru bus trip"), text, url }); return; }
+        } catch (error) { if (error?.name === "AbortError") return; }
+        try {
+            await navigator.clipboard.writeText(`${text}\n${url}`);
+            showStatus(tr("Trip link copied. Paste it in a message."));
+        } catch {
+            const menu = $("quickMenu");
+            if (menu) {
+                menu.innerHTML = `<div class="qm-title">${escapeHtml(tr("Copy this link"))}</div><textarea class="qm-link" readonly rows="3">${escapeHtml(url)}</textarea>`;
+                menu.hidden = false; menu.dataset.kind = "share";
+                menu.querySelector("textarea")?.select?.();
+            }
+        }
+    }
+
+    async function openSharedTrip() {
+        if (typeof location === "undefined") return;
+        const shared = parseShareParams(location.search);
+        if (!shared) return;
+        setEndpoint("origin", shared.origin);
+        setEndpoint("destination", shared.destination);
+        if (shared.preference) { state.selectedPreference = shared.preference; syncPreferenceChips(); }
+        if (shared.departAt) setDepartAt(shared.departAt, { replan: false });
+        showStatus(tr("Opening a shared trip…"));
+        await planJourney();
+        if (shared.bus) {
+            const base = name => String(name || "").toUpperCase().split(" ")[0];
+            const route = normalizeRoutes(state.lastPlan).find(r => (r.legs || []).some(l => l.transit && base(l.route_name) === base(shared.bus)));
+            const leg = route?.legs.find(l => l.transit && base(l.route_name) === base(shared.bus));
+            if (leg) trackSearchBuses([leg.route_name], [route], false, placeOf(leg.from, "boarding stop"), placeOf(leg.to, "alighting stop"), []);
+        }
+    }
+
+    // ---- Installable app ----
+    function setupInstallableApp() {
+        if (typeof window === "undefined" || typeof navigator === "undefined") return;
+        window.addEventListener?.("beforeinstallprompt", (event) => { event.preventDefault?.(); state.installPrompt = event; });
+        const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+        if ("serviceWorker" in navigator && (location.protocol === "https:" || local)) {
+            navigator.serviceWorker.register("/sw.js").catch(error => console.warn("Offline support unavailable:", error));
+        }
+    }
+
+    function setupWhatsNew() {
+        const box = $("whatsNew");
+        if (!box || store.get("bt.seen.features-1", false)) return;
+        box.innerHTML = `<strong>${escapeHtml(tr("New"))}</strong> ` +
+            `<span>${escapeHtml(tr("☆ Save Home/Work · 🔔 Remind me and ↗ Share on every journey · stop alerts after ▶ Start journey · ☰ menu: ಕನ್ನಡ, install app"))}</span>` +
+            `<button type="button" aria-label="${escapeHtml(tr("Dismiss"))}">✕</button>`;
+        box.hidden = false;
+        box.querySelector("button")?.addEventListener("click", () => { box.hidden = true; store.set("bt.seen.features-1", true); });
+    }
+
+    function setupEverydayFeatures() {
+        state.lang = store.get("bt.lang", "en") === "kn" ? "kn" : "en";
+        state.journey.alertsOn = store.get("bt.alerts", true) !== false;
+        setupPlaces();
+        setupWhatsNew();
+        setupInstallableApp();
+        restoreReminder();
+        $("guideAlertToggle")?.addEventListener("click", () => {
+            state.journey.alertsOn = !state.journey.alertsOn;
+            store.set("bt.alerts", state.journey.alertsOn);
+            if (state.journey.alertsOn) askNotificationPermission();
+            syncAlertToggle();
+            renderJourneyGuide();
+        });
+        $("guideShare")?.addEventListener("click", () => {
+            const step = guideSteps(state.journey.route)[state.journey.stepIndex];
+            const leg = step?.kind === "ride" || step?.kind === "board" ? step.leg : null;
+            shareTrip(state.journey.route, { bus: leg && leg.role !== "metro" ? leg.route_name : "" });
+        });
+        $("profileBtn")?.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const menu = $("quickMenu");
+            if (menu && !menu.hidden && menu.dataset.kind === "more") closeQuickMenu(); else openQuickMenu("more", $("profileBtn"));
+        });
+        syncAlertToggle();
+        if (state.lang === "kn") applyLanguage("kn");
+        // Missed-bus check while guiding (every 30 s; cheap, no network of its own).
+        setInterval(() => { if (state.journey.active) checkMissedBus(); }, 30000);
+    }
+
+
     function escapeHtml(value) {
         return String(value)
             .replaceAll("&", "&amp;")
@@ -3645,11 +4340,13 @@
     async function init() {
         initializeMap();
         setupEvents();
+        setupEverydayFeatures();
         syncPreferenceChips();
         checkHealth();
         try {
             await waitForMap();
             state.map.resize();
+            openSharedTrip();
             console.log("Bengaluru Transit AI initialized.");
         } catch (error) {
             console.error(error);
