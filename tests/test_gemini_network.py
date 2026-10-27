@@ -125,7 +125,7 @@ class GeminiNetworkTests(unittest.TestCase):
         self.assertIn("GEMINI_TIMEOUT", out.getvalue())
 
     def test_timeout_setting(self):
-        for value, expected in (("", 20.0), ("35", 35.0), ("1", 3.0), ("999", 60.0), ("abc", 20.0)):
+        for value, expected in (("", 15.0), ("35", 35.0), ("1", 3.0), ("999", 60.0), ("abc", 15.0)):
             with self.subTest(value=value), patch.dict(os.environ, {"GEMINI_TIMEOUT": value}):
                 self.assertEqual(gemini._timeout_setting(), expected)
 

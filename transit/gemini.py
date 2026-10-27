@@ -37,15 +37,15 @@ API_ROOT = os.environ.get("GEMINI_API_ROOT", "https://generativelanguage.googlea
 DEFAULT_MODEL = "gemini-3.1-flash-lite"   # free tier, fast, supports function calling
 DEFAULT_FALLBACK_MODELS = ("gemini-3.5-flash-lite",)
 CONNECT_SECONDS = 6          # opening the connection to Google
-TOTAL_SECONDS = 32           # all attempts together; the page itself gives up after 40 s
+TOTAL_SECONDS = 24           # all attempts together; then the built-in helper answers at once
 
 
 def _timeout_setting() -> float:
-    """How long to wait for Gemini's answer (GEMINI_TIMEOUT, 3-60 s, default 20)."""
+    """How long to wait for Gemini's answer (GEMINI_TIMEOUT, 3-60 s, default 15)."""
     try:
-        value = float(os.environ.get("GEMINI_TIMEOUT", "") or 20)
+        value = float(os.environ.get("GEMINI_TIMEOUT", "") or 15)
     except ValueError:
-        value = 20.0
+        value = 15.0
     return min(60.0, max(3.0, value))
 
 

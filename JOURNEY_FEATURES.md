@@ -78,6 +78,18 @@ What the chat can do (with Gemini; the built-in helper understands the simpler p
 Keep `.env` private. The web server only serves `static/`, so `.env` cannot be downloaded from the app. For a hosted deployment, set `GEMINI_API_KEY` as a secret environment variable on the host instead of uploading `.env`.
 Optional: `GEMINI_MODEL` picks another Gemini model.
 
+## Places that are not BMTC stop names
+
+The assistant first matches BMTC stop names as written, then a very close spelling ("whitefeild"), and says in its reply what it assumed. A neighbourhood, office park or landmark with no stop of its own ("Brookefield") is looked up on OpenStreetMap (free, Bengaluru only, cached in `data/geocode_cache.json`, at most one look-up per second) and planned from that exact point, naming the nearest real stop. Nothing is guessed: an unknown place is reported as not found. Set `GEOCODER=off` to disable the online look-up.
+
+## Gemini speed and network
+
+Gemini is called only when the built-in reader cannot understand a message; greetings and clear commands answer at once. Calls use IPv4 first (many cloud servers have no working IPv6), allow 6 s to connect and `GEMINI_TIMEOUT` seconds (default 15) for the answer, and stop all retries within 24 s, after which the built-in helper answers. On a server, `sudo python3 scripts/check_gemini.py` checks the key, address lookup, connection, a real Gemini call and the place look-up step by step (it never prints the key).
+
+## Journey and live panels
+
+Both panels have a slim pinned header with a one-line summary; click it (or ▾) to fold, ⤢ to give one panel the room. On desktop, drag the handle between them (a panel squeezed below its header folds; double-click resets; the split is remembered). On phones the panels share a bottom sheet with tabs: pull it by the handle, the tabs or the header; it snaps to small (tabs + summary), half or full height, and a quick flick moves one size.
+
 ## Testing live screens without the real feed
 
 `python scripts/simulated_bmtc_feed.py` starts a clearly labelled SIMULATION on port 8790: bus positions are invented, stop order is real. Set `BMTC_API_ROOT=http://127.0.0.1:8790/WebAPI` before `python app.py` to use it. Never use it to judge real bus locations. Opening the page with `?debug` exposes the app state as `window.__transit` for manual inspection.

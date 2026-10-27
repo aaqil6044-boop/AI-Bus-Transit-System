@@ -3,6 +3,8 @@
 Run from the project folder:  python -m unittest discover -s tests -p "test_*.py"
 No network, router or real database is needed: small fixtures are built in memory.
 """
+import os
+os.environ.setdefault("GEOCODER", "off")   # tests never look places up online
 import json
 import sqlite3
 import tempfile
@@ -290,7 +292,7 @@ class AssistantFlowTests(unittest.TestCase):
     def test_unknown_place_is_reported_not_invented(self):
         result = assistant.handle_assistant(self.db, {"message": "from Atlantis to Hope Farm"})
         self.assertFalse(result["ok"])
-        self.assertIn("could not find a BMTC stop called \"Atlantis\"", result["reply"])
+        self.assertIn("could not find \"Atlantis\" as a BMTC stop or a Bengaluru place", result["reply"])
         self.assertIsNone(result["plan"])
 
     def test_missing_half_asks_a_question_and_keeps_the_stop(self):

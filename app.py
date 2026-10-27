@@ -23,7 +23,7 @@ from transit.bmtc_live import BMTCUnavailable, live_route
 
 ROOT = Path(__file__).parent
 # Bump together with BUILD in static/app.js: the page warns when it talks to an older server.
-BUILD = "2026-10-25-busroute-1"
+BUILD = "2026-10-26-dock-2"
 ROUTES_FILE = ROOT / "data" / "routes.json"
 FEEDBACK_FILE = ROOT / "data" / "feedback.jsonl"
 TRANSIT_DATABASE = ROOT / "data" / "bengaluru_transit.db"

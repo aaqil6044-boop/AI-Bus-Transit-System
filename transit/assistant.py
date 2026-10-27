@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import re
 
-from . import gemini
+from . import gemini, places
 from .otp import RouterUnavailable, plan_journey
-from .planner import search_stops
+from .planner import STOP_ALIASES, normalize_stop_text, search_stops
 
 HELP = ("I can plan Bengaluru bus journeys from your typed or spoken commands. "
         "Try \"from Hope Farm to Majestic\", add \"less walking\", \"fewer transfers\" or \"leave at 9:30 pm\", "
@@ -103,19 +103,59 @@ def _stop_dict(row: dict) -> dict:
             "stop_lat": row["stop_lat"], "stop_lon": row["stop_lon"]}
 
 
-def resolve_place(database, text: str):
-    """Return (stop or None, number of other matching stops, suggestions)."""
+def resolve_place(database, text: str, *, look_up: bool = True, geocode_transport=None):
+    """Return (stop or None, number of other matching stops, suggestions).
+
+    Order: BMTC stop names as written; then the closest spelling of a stop name ("whitefeild");
+    then (``look_up``) the place on OpenStreetMap, used as a map point when a BMTC stop is within
+    1.5 km. A stop found by a fallback carries a ``note`` saying what was assumed."""
     matches = search_stops(database, text, limit=15)
+    if not matches:
+        close = places.close_stop_name(database, text)
+        if close:
+            matches = search_stops(database, close, limit=15)
+            if matches:
+                best = matches[0]
+                others = sum(1 for row in matches[1:] if row["stop_name"] == best["stop_name"])
+                return {**_stop_dict(best), "note": f"I read \"{text}\" as {best['stop_name']}."}, others, []
     if matches:
         best = matches[0]
         others = sum(1 for row in matches[1:] if row["stop_name"] == best["stop_name"])
-        return _stop_dict(best), others, []
+        stop = _stop_dict(best)
+        wanted = normalize_stop_text(text)
+        if wanted and wanted not in STOP_ALIASES and wanted not in normalize_stop_text(best["stop_name"]):
+            stop["note"] = f"I read \"{text}\" as {best['stop_name']}."     # spelling was corrected
+        return stop, others, []
+    if look_up:
+        found = places.geocode(text, transport=geocode_transport)
+        if found:
+            near, metres = places.nearest_stop(database, found["lat"], found["lon"])
+            if near is not None:
+                name = found["name"]
+                point = {"stop_id": "place-" + (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "point"),
+                         "stop_name": name, "stop_lat": found["lat"], "stop_lon": found["lon"], "is_map_point": True,
+                         "note": (f"{name} is not a BMTC stop name, so I used its location from OpenStreetMap "
+                                  f"(nearest stop: {near['stop_name']}, about {int(round(metres, -1))} m).")}
+                return point, 0, []
     suggestions = []
     for word in sorted(re.findall(r"[A-Za-z]{4,}", text), key=len, reverse=True)[:2]:
         for row in search_stops(database, word, limit=4):
             if row["stop_name"] not in suggestions:
                 suggestions.append(row["stop_name"])
     return None, 0, suggestions[:4]
+
+
+def _as_context(stop):
+    """A place found on the map (not a BMTC stop) is planned from its exact point."""
+    if stop and stop.get("is_map_point"):
+        return {"id": stop["stop_id"], "name": stop["stop_name"], "lat": stop["stop_lat"], "lon": stop["stop_lon"],
+                "is_map_point": True}
+    return None
+
+
+def _take_note(stop, notes):
+    if stop and stop.get("note"):
+        notes.append(stop.pop("note"))
 
 
 def _context_stop(value):
@@ -153,7 +193,7 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
         result["engine"] = "instant"
         return result
     place_terms = [rules.get(key) for key in ("origin", "destination") if rules.get(key)]
-    places_understood = bool(place_terms) and all(resolve_place(database, term)[0] for term in place_terms)
+    places_understood = bool(place_terms) and all(resolve_place(database, term, look_up=False)[0] for term in place_terms)
     locally_understood = places_understood or any((rules.get("preference"), rules.get("depart_at"),
                                                    rules.get("swap"), rules.get("from_here"), rules.get("live")))
     engine, notice, ai = "built-in", "", None
@@ -218,11 +258,15 @@ def _from_here(database, payload: dict, parsed: dict, rules) -> dict:
             suggestions = suggestions or more
         if stop is None:
             hint = (" Closest names: " + ", ".join(suggestions) + ".") if suggestions else ""
-            return _reply(f"I could not find a BMTC stop called \"{parsed['destination']}\".{hint}", intent="error",
-                          preference=preference, depart_at=depart_at)
+            return _reply(f"I could not find \"{parsed['destination']}\" as a BMTC stop or a Bengaluru place.{hint}",
+                          intent="error", preference=preference, depart_at=depart_at)
         destination = stop
+    notes = []
+    _take_note(destination, notes)
     text = ("Using your current location as the start" +
             (f", going to {destination['stop_name']}." if destination else ". Where do you want to go?"))
+    if notes:
+        text += " " + " ".join(notes)
     return _reply(text, intent="use_location", destination=destination, preference=preference, depart_at=depart_at)
 
 
@@ -256,14 +300,15 @@ def _answer(database, payload: dict, parsed: dict, rules, now) -> dict:
                     suggestions = suggestions or more
                 if stop is None:
                     hint = (" Closest names: " + ", ".join(suggestions) + ".") if suggestions else ""
-                    return _reply(f"I could not find a BMTC stop called \"{parsed[key]}\".{hint} BMTC spells some names "
-                                  "its own way (for example \"White Field\" or \"Yeshawanthapura\"). Try a shorter name or "
-                                  "use Pick on map.", intent="error", origin=origin, destination=destination,
+                    return _reply(f"I could not find \"{parsed[key]}\" as a BMTC stop or a Bengaluru place.{hint} "
+                                  "Try another spelling, a nearby landmark, or use Pick on map.",
+                                  intent="error", origin=origin, destination=destination,
                                   preference=preference, depart_at=depart_at)
+                _take_note(stop, notes)
                 if key == "origin":
-                    origin, origin_ctx = stop, None
+                    origin, origin_ctx = stop, _as_context(stop)
                 else:
-                    destination, destination_ctx = stop, None
+                    destination, destination_ctx = stop, _as_context(stop)
                 if others and stop["stop_name"] not in busiest:
                     busiest.append(stop["stop_name"])
 

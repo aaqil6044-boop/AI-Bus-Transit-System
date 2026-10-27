@@ -76,6 +76,16 @@ def main() -> int:
         print("The [Gemini] line above (if any) has Google's exact reason.")
         return 4
     print(f"OK in {time.monotonic() - started:.1f} s -> {action}")
+
+    step("Place look-up (OpenStreetMap, for names that are not BMTC stops)")
+    from transit import places  # noqa: E402
+    started = time.monotonic()
+    found = places.geocode("Brookefield")
+    if found:
+        print(f"OK in {time.monotonic() - started:.1f} s -> {found['name']} at {found['lat']}, {found['lon']}")
+    else:
+        print("Not available (switched off, or this server cannot reach nominatim.openstreetmap.org). "
+              "Stop names still work; neighbourhood names will not.")
     print("\nGemini works from this machine. Restart the app if it is still using old settings:")
     print("  sudo systemctl restart bengaluru-app")
     return 0

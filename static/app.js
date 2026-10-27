@@ -125,7 +125,7 @@
         if (banner) banner.hidden = true;
     }
 
-    const APP_BUILD = "2026-10-25-busroute-1";   // must match BUILD in app.py
+    const APP_BUILD = "2026-10-26-dock-2";   // must match BUILD in app.py
 
     async function checkHealth() {
         try {
@@ -3104,8 +3104,10 @@
         const guideOn = !!guide && !guide.hidden, liveOn = !!live && !live.hidden;
         dock.classList.toggle("has-panel", guideOn || liveOn);
         dock.classList.toggle("both", guideOn && liveOn);
-        if (guideOpened) guide.classList.remove("folded");
-        if (liveOpened) live.classList.remove("folded");
+        // A panel that opens starts at its top (and starting a journey from the bottom of the live list
+        // must not leave that list scrolled to its end).
+        if (guideOpened) { guide.classList.remove("folded"); guide.scrollTop = 0; if (live) live.scrollTop = 0; }
+        if (liveOpened) { live.classList.remove("folded"); live.scrollTop = 0; }
         // Which tab a phone shows: the panel the traveller just asked for. Live buses opened automatically
         // by guidance do not steal the screen from the journey steps.
         if (liveOpened && !state.liveBus.autoForJourney) setDockTab("live");
@@ -3119,41 +3121,155 @@
         if (!dock?.style) return;
         if (px === null) dock.style.removeProperty("--dock-h");
         else dock.style.setProperty("--dock-h", `${Math.round(px)}px`);
+        // The smallest size shows only the tabs and a one-line summary.
+        dock.classList?.toggle("peek", px !== null && phoneLayout() && px <= dockSnapHeights().peek + 12);
     }
 
     function dockSnapHeights() {
         const height = window.innerHeight || 800;
-        return { peek: 190, half: Math.round(height * 0.46), full: Math.round(height - 80) };
+        const dock = $("sideDock");
+        // Peek = handle + tabs + the slim header of the panel on show (measured, so it always fits exactly).
+        let peek = 150;
+        try {
+            const grip = dock?.querySelector?.(".dock-grip"), tabs = dock?.querySelector?.(".dock-tabs");
+            const shown = [$("journeyGuide"), $("liveBusPanel")].find(panel => panel && !panel.hidden && panel.offsetHeight > 0);
+            const head = shown?.querySelector?.(".dock-head");
+            const measured = (grip?.offsetHeight || 0) + (tabs?.offsetHeight || 0) + (head?.offsetHeight || 0) + 6;
+            if (measured > 60) peek = Math.max(110, Math.min(220, measured));
+        } catch { /* keep the default */ }
+        return { peek, half: Math.round(height * 0.5), full: Math.round(height - 80) };
+    }
+
+    // Summary line in each slim header, mirrored from the panel's own title / headline.
+    function syncDockSummaries() {
+        const pairs = [["guideSum", "guideTitle"], ["liveSum", "liveBusStatus"]];
+        pairs.forEach(([target, source]) => {
+            const out = $(target), from = $(source);
+            if (out && from) out.textContent = (from.textContent || "").replace(/\s+/g, " ").trim();
+        });
+    }
+
+    // Header shadow once scrolled; "More below" hint while content continues out of sight.
+    function updateDockScrollHints(panel) {
+        if (!panel?.classList) return;
+        const top = panel.scrollTop || 0;
+        const below = (panel.scrollHeight || 0) - top - (panel.clientHeight || 0);
+        panel.classList.toggle("scrolled", top > 36);
+        panel.classList.toggle("more-below", !panel.classList.contains("folded") && below > 28);
+    }
+
+    function updateDockSpace() {
+        const dock = $("sideDock");
+        const open = !!dock?.classList?.contains("has-panel");
+        document.body?.classList?.toggle("dock-open", open);
+        if (open && phoneLayout() && dock.getBoundingClientRect) {
+            const box = dock.getBoundingClientRect();
+            document.documentElement?.style?.setProperty("--dock-space", `${Math.round((window.innerHeight || 0) - box.top)}px`);
+        }
+    }
+
+    function foldDockPanel(panel, folded) {
+        if (!panel?.classList) return;
+        panel.classList.toggle("folded", folded);
+        if (folded) panel.scrollTop = 0;          // unfolding later starts at the top, never mid-way
+        updateDockMaxButtons();
+        updateDockScrollHints(panel);
+    }
+
+    function updateDockMaxButtons() {
+        const guide = $("journeyGuide"), live = $("liveBusPanel");
+        [[guide, live], [live, guide]].forEach(([panel, other]) => {
+            const button = panel?.querySelector?.(".dock-max");
+            if (!button?.setAttribute) return;
+            const big = !panel.classList.contains("folded") && !!other && !other.hidden && other.classList.contains("folded");
+            button.setAttribute("aria-pressed", String(big));
+            button.title = big ? "Share the space again" : "Make this panel big";
+        });
     }
 
     function setupSideDock() {
         const dock = $("sideDock");
         if (!dock?.addEventListener) return;
         const guide = $("journeyGuide"), live = $("liveBusPanel");
+        const panels = [guide, live].filter(Boolean);
+        const store = {
+            get(key) { try { return window.localStorage?.getItem(key); } catch { return null; } },
+            set(key, value) { try { window.localStorage?.setItem(key, value); } catch { /* private mode */ } },
+        };
+        const savedSplit = parseFloat(store.get("dockSplit"));
+        if (savedSplit >= 15 && savedSplit <= 85) dock.style.setProperty("--split", `${savedSplit}%`);
+
+        // "More below" hint inside each panel; tapping it scrolls on.
+        panels.forEach(panel => {
+            if (!panel.querySelector?.(".dock-more") && document.createElement) {
+                const more = document.createElement("div");
+                more.className = "dock-more";
+                more.innerHTML = '<span role="button" tabindex="-1">▾ More</span>';
+                more.addEventListener?.("click", () => panel.scrollBy?.({ top: Math.max(120, (panel.clientHeight || 300) * 0.7) }));
+                panel.appendChild(more);
+            }
+            panel.addEventListener("scroll", () => updateDockScrollHints(panel), { passive: true });
+        });
+        const refreshAll = () => {
+            syncDockSummaries();
+            panels.forEach(updateDockScrollHints);
+            updateDockMaxButtons();
+            updateDockSpace();
+        };
+        let queued = false;
+        const refreshSoon = () => {
+            if (queued) return;
+            queued = true;
+            (window.requestAnimationFrame || setTimeout)(() => { queued = false; refreshAll(); });
+        };
         // React whenever either panel is shown or hidden, however the rest of the app does it.
         if (typeof MutationObserver === "function") {
-            const watch = (panel, key) => new MutationObserver(() => syncDock({[key]: !panel.hidden}))
+            const watch = (panel, key) => new MutationObserver(() => { syncDock({[key]: !panel.hidden}); refreshSoon(); })
                 .observe(panel, {attributes: true, attributeFilter: ["hidden"]});
             if (guide) watch(guide, "guideOpened");
             if (live) watch(live, "liveOpened");
+            const content = new MutationObserver(refreshSoon);
+            panels.forEach(panel => content.observe(panel, { childList: true, characterData: true, subtree: true }));
         }
+        if (typeof ResizeObserver === "function") {
+            const sizes = new ResizeObserver(refreshSoon);
+            sizes.observe(dock);
+            panels.forEach(panel => sizes.observe(panel));
+        }
+        window.addEventListener?.("resize", () => {
+            if (!phoneLayout()) { setDockHeight(null); dock.classList.remove("peek"); }
+            refreshSoon();
+        });
         syncDock();
+        refreshAll();
 
-        dock.querySelectorAll(".dock-tab").forEach(button => button.addEventListener("click", () => setDockTab(button.dataset.tab)));
+        dock.querySelectorAll(".dock-tab").forEach(button => button.addEventListener("click", () => {
+            setDockTab(button.dataset.tab);
+            // Choosing a tab from the smallest size opens the sheet enough to read it.
+            if (dock.classList.contains("peek")) setDockHeight(dockSnapHeights().half);
+            refreshSoon();
+        }));
 
-        dock.querySelectorAll(".dock-fold").forEach(button => button.addEventListener("click", (event) => {
-            event.stopPropagation();
-            const panel = $(button.dataset.target);
+        const toggleFold = (panel) => {
             if (!panel) return;
             if (phoneLayout()) {
-                // On a phone, folding means "show me the map": the sheet drops to its peek height.
-                const { peek, half } = dockSnapHeights();
-                const isPeek = dock.style.getPropertyValue("--dock-h") === `${peek}px`;
-                setDockHeight(isPeek ? half : peek);
+                // On a phone, folding means "show me the map": the sheet drops to its smallest size and back.
+                const { half } = dockSnapHeights();
+                setDockHeight(dock.classList.contains("peek") ? half : dockSnapHeights().peek);
                 return;
             }
-            panel.classList.toggle("folded");
+            foldDockPanel(panel, !panel.classList.contains("folded"));
             reframeSelectedRoute();
+        };
+        dock.querySelectorAll(".dock-fold").forEach(button => button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            toggleFold($(button.dataset.target));
+        }));
+        // The whole header is a big target: click it to fold / unfold (desktop) or open / lower the sheet (phone).
+        panels.forEach(panel => panel.querySelector?.(".dock-head")?.addEventListener("click", (event) => {
+            if (event.target?.closest?.("button")) return;
+            if (dock.dataset.justDragged === "1") return;
+            toggleFold(panel);
         }));
         dock.querySelectorAll(".dock-max").forEach(button => button.addEventListener("click", (event) => {
             event.stopPropagation();
@@ -3161,32 +3277,50 @@
             const other = panel === guide ? live : guide;
             if (!panel) return;
             const already = !panel.classList.contains("folded") && (!other || other.hidden || other.classList.contains("folded"));
-            panel.classList.remove("folded");
-            if (other && !other.hidden) other.classList.toggle("folded", !already);
+            foldDockPanel(panel, false);
+            if (other && !other.hidden) foldDockPanel(other, !already);
+            reframeSelectedRoute();
         }));
 
-        // Desktop: drag the handle between the panels to share the height.
+        // Desktop: drag the handle between the panels to share the height. Squeezing a panel below its
+        // header folds it (it snaps shut); pulling it open again unfolds it.
         const splitter = $("dockSplitter");
         if (splitter) {
             let dragging = false;
+            const SNAP = 130;
             const move = (clientY) => {
                 const box = dock.getBoundingClientRect();
-                const share = Math.min(85, Math.max(15, ((clientY - box.top) / Math.max(1, box.height)) * 100));
+                const top = Math.max(0, clientY - box.top);
+                const bottom = Math.max(0, box.bottom - clientY - 18);
+                foldDockPanel(guide, top < SNAP);
+                foldDockPanel(live, bottom < SNAP && top >= SNAP);
+                const share = Math.min(85, Math.max(15, (top / Math.max(1, box.height)) * 100));
                 dock.style.setProperty("--split", `${share.toFixed(1)}%`);
             };
             splitter.addEventListener("pointerdown", (event) => {
                 dragging = true;
-                guide?.classList.remove("folded");
-                live?.classList.remove("folded");
                 dock.classList.add("dragging");
                 splitter.setPointerCapture?.(event.pointerId);
                 event.preventDefault();
             });
             splitter.addEventListener("pointermove", (event) => { if (dragging) move(event.clientY); });
-            const end = () => { if (!dragging) return; dragging = false; dock.classList.remove("dragging"); };
+            const end = () => {
+                if (!dragging) return;
+                dragging = false;
+                dock.classList.remove("dragging");
+                if (!guide?.classList.contains("folded") && !live?.classList.contains("folded")) {
+                    store.set("dockSplit", String(parseFloat(dock.style.getPropertyValue("--split")) || 50));
+                }
+                reframeSelectedRoute();
+            };
             splitter.addEventListener("pointerup", end);
             splitter.addEventListener("pointercancel", end);
-            splitter.addEventListener("dblclick", () => dock.style.setProperty("--split", "50%"));
+            splitter.addEventListener("dblclick", () => {
+                foldDockPanel(guide, false);
+                foldDockPanel(live, false);
+                dock.style.setProperty("--split", "50%");
+                store.set("dockSplit", "50");
+            });
             splitter.addEventListener("keydown", (event) => {
                 const now = parseFloat(dock.style.getPropertyValue("--split")) || 50;
                 if (event.key === "ArrowUp") dock.style.setProperty("--split", `${Math.max(15, now - 5)}%`);
@@ -3194,41 +3328,67 @@
             });
         }
 
-        // Phone: pull the sheet up or down; it snaps to peek, half or full height. A tap cycles sizes.
-        const grip = $("dockGrip");
-        if (grip) {
-            let drag = null;
-            grip.addEventListener("pointerdown", (event) => {
-                drag = { y: event.clientY, start: dock.getBoundingClientRect().height, moved: false };
+        // Phone: pull the sheet up or down by its handle, the tabs or a panel's header; it follows the
+        // finger and snaps to small / half / full height (a quick flick goes one size in that direction).
+        // A tap on the handle steps through the sizes.
+        let drag = null;
+        dock.addEventListener("pointerdown", (event) => {
+            if (!phoneLayout() || (event.button !== undefined && event.button > 0)) return;
+            const zone = event.target?.closest?.(".dock-grip, .dock-tabs, .dock-head");
+            if (!zone || event.target.closest(".dock-panel-actions")) return;
+            drag = { y: event.clientY, t: Date.now(), start: dock.getBoundingClientRect().height, moved: false,
+                     grip: !!event.target.closest(".dock-grip"), id: event.pointerId };
+        });
+        window.addEventListener?.("pointermove", (event) => {
+            if (!drag || event.pointerId !== drag.id) return;
+            const delta = drag.y - event.clientY;
+            if (!drag.moved && Math.abs(delta) < 6) return;
+            if (!drag.moved) {
+                drag.moved = true;
                 dock.classList.add("dragging");
-                grip.setPointerCapture?.(event.pointerId);
-            });
-            grip.addEventListener("pointermove", (event) => {
-                if (!drag) return;
-                const delta = drag.y - event.clientY;
-                if (Math.abs(delta) > 4) drag.moved = true;
-                if (!drag.moved) return;
-                const { peek, full } = dockSnapHeights();
-                setDockHeight(Math.min(full, Math.max(peek - 40, drag.start + delta)));
-            });
-            const finish = () => {
-                if (!drag) return;
-                const { moved } = drag;
-                drag = null;
-                dock.classList.remove("dragging");
-                const { peek, half, full } = dockSnapHeights();
-                const height = dock.getBoundingClientRect().height;
-                if (!moved) {
-                    // tap: half -> full -> peek -> half
+            }
+            event.preventDefault?.();
+            const { peek, full } = dockSnapHeights();
+            const height = Math.min(full, Math.max(peek - 30, drag.start + delta));
+            dock.style.setProperty("--dock-h", `${Math.round(height)}px`);
+            dock.classList.toggle("peek", height <= peek + 12);
+            drag.last = { y: event.clientY, t: Date.now() };
+        });
+        const finish = (event) => {
+            if (!drag || (event && event.pointerId !== drag.id)) return;
+            const current = drag;
+            drag = null;
+            dock.classList.remove("dragging");
+            const { peek, half, full } = dockSnapHeights();
+            const height = dock.getBoundingClientRect().height;
+            if (!current.moved) {
+                if (current.grip) {
+                    // tap on the handle: small -> half -> full -> small
                     setDockHeight(height < (peek + half) / 2 ? half : height < (half + full) / 2 ? full : peek);
-                    return;
                 }
-                const nearest = [peek, half, full].reduce((best, value) => Math.abs(value - height) < Math.abs(best - height) ? value : best);
-                setDockHeight(nearest);
-            };
-            grip.addEventListener("pointerup", finish);
-            grip.addEventListener("pointercancel", finish);
-        }
+                return;
+            }
+            dock.dataset.justDragged = "1";
+            setTimeout(() => { delete dock.dataset.justDragged; }, 350);
+            const sizes = [peek, half, full];
+            const elapsed = Math.max(1, Date.now() - current.t);
+            const speed = (current.y - (current.last?.y ?? current.y)) / elapsed;   // px per ms, + = upwards
+            let target;
+            if (Math.abs(speed) > 0.6) {
+                target = speed > 0 ? sizes.find(size => size > height + 8) ?? full
+                                   : [...sizes].reverse().find(size => size < height - 8) ?? peek;
+            } else {
+                target = sizes.reduce((best, size) => Math.abs(size - height) < Math.abs(best - height) ? size : best);
+            }
+            setDockHeight(target);
+            refreshSoon();
+        };
+        window.addEventListener?.("pointerup", finish);
+        window.addEventListener?.("pointercancel", finish);
+        // After a drag the finger lifts over a tab or header: that is not a click.
+        dock.addEventListener("click", (event) => {
+            if (dock.dataset.justDragged === "1") { event.stopPropagation(); event.preventDefault(); }
+        }, true);
     }
 
     function setupRouteGrip() {

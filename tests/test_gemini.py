@@ -2,6 +2,8 @@
 
 Run from the project folder:  python -m unittest discover -s tests
 """
+import os
+os.environ.setdefault("GEOCODER", "off")   # tests never look places up online
 import json
 import os
 import tempfile
