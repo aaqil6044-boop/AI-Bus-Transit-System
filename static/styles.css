@@ -1376,6 +1376,30 @@ input:focus-visible {
     line-height: 1.35;
 }
 
+/* Journey Confidence: transfer resilience, not a claim that a bus will be on time. */
+.journey-confidence {
+    margin: 10px 0;
+    padding: 10px 11px;
+    border: 1px solid rgba(255,255,255,.13);
+    border-radius: 12px;
+    background: rgba(255,255,255,.045);
+    font-size: 12px;
+    line-height: 1.42;
+}
+.journey-confidence.high { border-color: rgba(88,223,168,.42); background: rgba(45,139,103,.12); }
+.journey-confidence.medium { border-color: rgba(246,202,109,.48); background: rgba(155,105,15,.12); }
+.journey-confidence.low { border-color: rgba(255,122,138,.55); background: rgba(160,42,60,.14); }
+.confidence-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #f4fff9; }
+.confidence-heading span { font-variant-numeric: tabular-nums; color: rgba(255,255,255,.72); }
+.journey-confidence p { margin: 5px 0 2px; color: rgba(255,255,255,.83); }
+.journey-confidence small { display: block; margin-top: 6px; color: rgba(255,255,255,.55); }
+.journey-confidence summary { margin-top: 7px; color: #dff7ec; cursor: pointer; font-weight: 750; }
+.journey-confidence ol { margin: 7px 0 0; padding-left: 20px; }
+.journey-confidence li { margin: 6px 0; color: rgba(255,255,255,.76); }
+.journey-confidence li.risky b { color: #ff9ca8; }
+.journey-confidence li.tight b { color: #f6ca6d; }
+.journey-confidence li.comfortable b { color: #79eab6; }
+
 /* MapLibre markers: route endpoints remain visible above every route layer. */
 .transit-origin-marker,
 .transit-destination-marker,

@@ -119,6 +119,7 @@ window.BT_I18N = {
         "↗ Share trip": "↗ ಪ್ರಯಾಣ ಹಂಚಿಕೊಳ್ಳಿ",
         "▲ Show trip panels": "▲ ಪ್ರಯಾಣ ಫಲಕಗಳನ್ನು ತೋರಿಸಿ",
         "⚡ Fastest": "⚡ ಅತಿ ವೇಗ",
+        "🛡 Safer connections": "🛡 ಸುರಕ್ಷಿತ ಸಂಪರ್ಕಗಳು",
         "🔄 Fewer transfers": "🔄 ಕಡಿಮೆ ಬದಲಾವಣೆ",
         "🔔 Stop alerts on": "🔔 ನಿಲ್ದಾಣ ಎಚ್ಚರಿಕೆ ಆನ್",
         "🔕 Stop alerts off": "🔕 ನಿಲ್ದಾಣ ಎಚ್ಚರಿಕೆ ಆಫ್",

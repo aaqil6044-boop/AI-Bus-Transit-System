@@ -195,6 +195,17 @@ class JourneyBuilderTests(unittest.TestCase):
         self.assertEqual(otp._rank(list(routes), "fastest")[0]["route_numbers"], ["1", "2"])
         self.assertEqual(otp._rank(list(routes), "fewer_transfers")[0]["route_numbers"], ["3"])
 
+    def test_safer_connections_can_outrank_a_fragile_fast_route(self):
+        routes = [
+            {"route_numbers": ["FAST", "RISK"], "total_elapsed_minutes": 40, "transfers": 1,
+             "walking_minutes": 2, "transit": True, "journey_confidence": {"level": "low"},
+             "_arrival": REQUESTED, "_start": REQUESTED, "_walk_seconds": 120},
+            {"route_numbers": ["SAFE"], "total_elapsed_minutes": 52, "transfers": 0,
+             "walking_minutes": 3, "transit": True, "journey_confidence": {"level": "high"},
+             "_arrival": REQUESTED, "_start": REQUESTED, "_walk_seconds": 180},
+        ]
+        self.assertEqual(otp._rank(routes, "safer_connections")[0]["route_numbers"], ["SAFE"])
+
 
 class DepartureTimeTests(unittest.TestCase):
     NOW = datetime(2026, 10, 13, 22, 45, tzinfo=otp.IST)
@@ -275,6 +286,7 @@ class AssistantParsingTests(unittest.TestCase):
         self.assertEqual((parsed["preference"], parsed["depart_at"]), ("less_walking", "21:30"))
         self.assertEqual((parsed["origin"], parsed["destination"]), ("Hope Farm", "Majestic"))
         self.assertEqual(assistant.parse_command("fewer transfers please")["preference"], "fewer_transfers")
+        self.assertEqual(assistant.parse_command("use safer connections please")["preference"], "safer_connections")
         self.assertEqual(assistant.parse_command("from A to B leave at 12 am")["depart_at"], "00:00")
 
     def test_swap_and_help(self):

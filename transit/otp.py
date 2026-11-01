@@ -473,11 +473,16 @@ def _rank(routes, preference):
     transfer_weight = 12 if preference == 'fewer_transfers' else 0
     walking_weight = 2 if preference == 'less_walking' else 0
     for route in routes:
+        confidence_penalty = 0
+        if preference == 'safer_connections':
+            confidence_penalty = {'low': 45, 'medium': 18, 'high': 0}.get(
+                (route.get('journey_confidence') or {}).get('level'), 12)
         route['preference_score'] = (route['total_elapsed_minutes'] + transfer_weight * route['transfers']
-                                     + walking_weight * route['walking_minutes'])
+                                     + walking_weight * route['walking_minutes'] + confidence_penalty)
         route['recommendation_reason'] = {
             'fewer_transfers': 'Balances arrival time with fewer bus changes',
             'less_walking': 'Balances arrival time with less walking',
+            'safer_connections': 'Balances arrival time with safer scheduled connections',
         }.get(preference, 'Earliest scheduled arrival')
     if routes:
         best_elapsed = min(r['total_elapsed_minutes'] for r in routes)
@@ -565,13 +570,18 @@ def plan_journey(database, origin_id, destination_id, profile=None,
         found += [route for route in later if _signature(route) not in known]
         found = _drop_dominated(found)
     _mark_backtracking(found, origin, destination)
-    routes = _rank(found, profile.get('preference', 'fastest'))
-    _add_stretch_lines(database, routes, excluded)
     try:
         from transit import reliability
-        reliability.annotate(routes)
+        reliability.annotate(found)
     except Exception as error:   # statistics are optional; a journey must never fail because of them
         print(f'[Reliability] skipped: {type(error).__name__}: {error}', flush=True)
+    try:
+        from transit import confidence
+        confidence.annotate(found)
+    except Exception as error:   # advice is optional; routing must remain available
+        print(f'[Journey confidence] skipped: {type(error).__name__}: {error}', flush=True)
+    routes = _rank(found, profile.get('preference', 'fastest'))
+    _add_stretch_lines(database, routes, excluded)
     errors = plan.get('routingErrors', [])
     if routes:
         fallback = None

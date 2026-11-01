@@ -125,7 +125,7 @@
         if (banner) banner.hidden = true;
     }
 
-    const APP_BUILD = "2026-10-27-features-2";   // must match BUILD in app.py
+    const APP_BUILD = "2026-11-01-confidence-1";   // must match BUILD in app.py
 
     async function checkHealth() {
         try {
@@ -1120,6 +1120,16 @@
             ? tr("{line} usually on time", { line: learned.route })
             : learned.typical_delay_minutes > 0 ? tr("{line} usually ~{min} min late", { line: learned.route, min: learned.typical_delay_minutes })
                 : tr("{line} usually ~{min} min early", { line: learned.route, min: -learned.typical_delay_minutes });
+        const confidence = route.journey_confidence;
+        const confidenceLevel = ["high", "medium", "low"].includes(confidence?.level) ? confidence.level : "";
+        const confidenceTransfers = Array.isArray(confidence?.transfers) ? confidence.transfers : [];
+        const confidenceHtml = confidenceLevel ? `<div class="journey-confidence ${confidenceLevel}">
+            <div class="confidence-heading"><strong>${confidenceLevel === "high" ? "✓" : confidenceLevel === "medium" ? "!" : "⚠"} ${escapeHtml(confidence.label)} connection confidence</strong><span>${escapeHtml(String(confidence.score))}/100</span></div>
+            <p>${escapeHtml(confidence.summary)}</p>
+            ${confidenceTransfers.length ? `<details><summary>Check ${confidenceTransfers.length} transfer${confidenceTransfers.length === 1 ? "" : "s"}</summary><ol>${confidenceTransfers.map(item =>
+                `<li class="${escapeHtml(item.status)}"><b>${escapeHtml(item.label)} at ${escapeHtml(item.stop)}</b><br>${escapeHtml(item.from_route)} → ${escapeHtml(item.to_route)} · ${escapeHtml(item.detail)}</li>`).join("")}</ol></details>` : ""}
+            <small>${escapeHtml(confidence.basis || "Connection guidance, not a live arrival guarantee.")}</small>
+        </div>` : "";
         const detourNote = route.detour === undefined ? routeDetourNote(route) : "";
         const stretchNotes = busLegs.filter(leg => leg.also_served_by?.length).map(leg =>
             `${busLegs.length > 1 ? `${leg.from?.name || "Stop"} → ${leg.to?.name || "stop"}: ` : ""}${leg.also_served_by.join(", ")} also go${leg.also_served_by.length === 1 ? "es" : ""} there`);
@@ -1156,6 +1166,8 @@
                 ${learned ? `<span class="route-metric reliability" title="${escapeHtml(learned.text)}">📊 ${escapeHtml(learnedShort)}</span>` : ""}
                 ${waitText ? `<span class="route-metric">${escapeHtml(waitText)}</span>` : ""}
             </div>
+
+            ${confidenceHtml}
 
             ${transferText ? `<div class="route-description">${escapeHtml(transferText)}${route.transit !== false && Number.isFinite(Number(route.total_minutes)) ? ` · ${escapeHtml(String(route.total_minutes))} min on buses` : ""}</div>` : ""}
             ${advisory ? `<div class="route-advisory">${escapeHtml(advisory)}</div>` : ""}
@@ -1941,6 +1953,10 @@
                 const from = leg.from?.name || tr("the stop"), to = leg.to?.name || tr("your stop");
                 const vars = { name, from, to, headsign: leg.headsign || "", time: leg.departure_time || "—", arrive: leg.arrival_time || "—",
                     count, min: leg.duration_minutes, also: (leg.also_served_by || []).join(", ") };
+                const connection = leg.connection;
+                const connectionNote = connection
+                    ? ` ${connection.label} connection: ${connection.scheduled_buffer_minutes} min at ${connection.stop}. ${connection.detail}`
+                    : "";
                 steps.push({
                     kind: "board", legIndex, leg, target: leg.from,
                     title: (metro ? tr("Board the metro: {name}", vars) : tr("Board {name}", vars)) + (leg.headsign ? ` → ${leg.headsign}` : ""),
@@ -1948,7 +1964,7 @@
                     detail: tr("Be at {from} before the scheduled {time}.", vars) + " " +
                         (leg.also_served_by?.length && !metro ? tr("{also} also go to {to}, so take whichever comes first.", vars) + " " : "") +
                         (metro ? tr("Check the line colour and the direction board. Times are from the timetable, not live.")
-                            : tr("Check the bus number and destination board. Times are from the timetable, not live."))
+                            : tr("Check the bus number and destination board. Times are from the timetable, not live.")) + connectionNote
                 });
                 steps.push({
                     kind: "ride", legIndex, leg, target: leg.to,
@@ -4192,7 +4208,7 @@
     }
 
     // ---- Share my trip ----
-    const SHARE_PREFS = ["fastest", "less_walking", "fewer_transfers"];
+    const SHARE_PREFS = ["fastest", "less_walking", "fewer_transfers", "safer_connections"];
     function shareUrl(origin, destination, { departAt = "", preference = "", bus = "", base = "" } = {}) {
         const from = placeRecord(origin), to = placeRecord(destination);
         if (!from || !to) return "";

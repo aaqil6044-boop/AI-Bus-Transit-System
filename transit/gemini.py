@@ -52,7 +52,7 @@ def _timeout_setting() -> float:
 TIMEOUT_SECONDS = _timeout_setting()
 TRANSIENT_STATUSES = (408, 429, 500, 502, 503, 504)
 IST = timezone(timedelta(hours=5, minutes=30))
-PREFERENCES = ("fastest", "less_walking", "fewer_transfers")
+PREFERENCES = ("fastest", "less_walking", "fewer_transfers", "safer_connections")
 
 SYSTEM_PROMPT = """You are the request reader for a free Bengaluru (BMTC) bus journey planner.
 Every message must become exactly ONE function call:
@@ -66,7 +66,7 @@ Every message must become exactly ONE function call:
   "where I am", "near me"), set from_my_location to true and leave origin empty.
   depart_at is 24-hour HH:MM in Bengaluru time, only if the traveller asked for a time; resolve phrases
   like "in 30 minutes" or "tonight at 9" using the current time given below. Otherwise leave it empty.
-  preference: "less_walking", "fewer_transfers" or "fastest" only if asked for; otherwise empty.
+  preference: "less_walking", "fewer_transfers", "safer_connections" or "fastest" only if asked for; otherwise empty.
 - swap_trip: the traveller wants the reverse / return journey of the currently selected trip.
 - check_live_buses: the traveller asks where a bus is right now, whether it is coming, how far away it is,
   or to track it ("where is my bus", "when will 500D come", "is KBS-1K near"). Put the bus number in
@@ -86,7 +86,7 @@ TOOLS = [{"functionDeclarations": [
      "parameters": {"type": "object", "properties": {
          "origin": {"type": "string", "description": "Start place or BMTC stop name. Omit to keep the selected start."},
          "destination": {"type": "string", "description": "Destination place or BMTC stop name. Omit to keep the selected one."},
-         "preference": {"type": "string", "description": "Only if asked for: fastest, less_walking or fewer_transfers."},
+         "preference": {"type": "string", "description": "Only if asked for: fastest, less_walking, fewer_transfers or safer_connections."},
          "depart_at": {"type": "string", "description": "24-hour HH:MM departure time, only if a time was asked for."},
          "from_my_location": {"type": "boolean", "description": "True when the start is the traveller's current position."}}}},
     {"name": "check_live_buses",

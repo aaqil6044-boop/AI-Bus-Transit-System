@@ -19,7 +19,7 @@ from .otp import RouterUnavailable, plan_journey
 from .planner import STOP_ALIASES, normalize_stop_text, search_stops
 
 HELP = ("I can plan Bengaluru bus journeys from your typed or spoken commands. "
-        "Try \"from Hope Farm to Majestic\", add \"less walking\", \"fewer transfers\" or \"leave at 9:30 pm\", "
+        "Try \"from Hope Farm to Majestic\", add \"less walking\", \"fewer transfers\", \"safer connections\" or \"leave at 9:30 pm\", "
         "or say \"swap\" to reverse the trip. I am a simple built-in helper, not a general chatbot.")
 
 HELP_KN = ("ನಿಮ್ಮ ಟೈಪ್ ಮಾಡಿದ ಅಥವಾ ಮಾತನಾಡಿದ ಆಜ್ಞೆಗಳಿಂದ ನಾನು ಬೆಂಗಳೂರು ಬಸ್ ಪ್ರಯಾಣಗಳನ್ನು ಯೋಜಿಸುತ್ತೇನೆ. "
@@ -37,6 +37,7 @@ _FILLER = re.compile(
     re.I)
 _TIME = re.compile(r"\b(?:leave|leaving|depart(?:ing)?|start(?:ing)?|at|by|around|after)\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.I)
 _PREFERENCES = (
+    ("safer_connections", re.compile(r"\b(?:safer|safe|reliable|low[ -]?risk)\s+(?:connections?|transfers?|changes?|route|journey)\b|\bavoid\s+(?:tight|risky)\s+(?:connections?|transfers?|changes?)\b", re.I)),
     ("less_walking", re.compile(r"\b(?:with\s+|and\s+)?(?:less|least|minimal|minimum|little|no)\s+walking\b|\bwalk(?:ing)?\s+less\b", re.I)),
     ("fewer_transfers", re.compile(r"\b(?:with\s+|and\s+)?(?:fewer|fewest|least|less|minimal|no)\s+(?:transfers?|changes?)\b|\bdirect\b", re.I)),
     ("fastest", re.compile(r"\b(?:the\s+)?(?:fastest|quickest|shortest)(?:\s+(?:route|way|journey))?\b", re.I)),
@@ -346,7 +347,7 @@ def _answer(database, payload: dict, parsed: dict, rules, now) -> dict:
     """Resolve places, then plan with the real router. ``rules`` is the rule-based reading, used
     as a second guess when a place Gemini named is not in the BMTC stop list."""
     preference = parsed["preference"] or payload.get("preference") or "fastest"
-    if preference not in ("fastest", "less_walking", "fewer_transfers"):
+    if preference not in ("fastest", "less_walking", "fewer_transfers", "safer_connections"):
         preference = "fastest"
     depart_at = parsed["depart_at"] or payload.get("depart_at") or None
     origin_ctx, destination_ctx = _context_stop(payload.get("origin")), _context_stop(payload.get("destination"))

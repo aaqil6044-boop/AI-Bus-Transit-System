@@ -92,6 +92,8 @@ Both panels have a slim pinned header with a one-line summary; click it (or ▾)
 
 ## Everyday features
 
+- **Journey Confidence (new)**: every route explains how robust its transfers are. It measures the timetable buffer *after* the transfer walk and, when enough evidence exists, subtracts the incoming route's typical learned delay. Each change is marked Comfortable, Tight or At risk, and the same warning follows the traveller into step-by-step guidance. Choose **🛡 Safer connections** (or ask the assistant for it) to rank robust journeys ahead of a faster but fragile connection. This is connection advice, not a promise that a service will run on time.
+
 - **Get-off alert**: while riding, the phone vibrates and shows "Get ready: <stop> is next" one stop before the alighting stop, and "Get off here" at it (plus a system notification when allowed). It uses the planned stop list and a GPS fix; weak (over 120 m) or old fixes never trigger it. The 🔔 button in the journey panel turns it off.
 - **Saved places and recent trips**: ☆ Save place stores Home, Work or a favourite in this browser only (never on the server). One tap on a saved place plans a trip there (from your location when no start is set). The assistant understands "take me home", "home to office" and similar. The last six trips are under 🕘 Recent.
 - **Leave reminder**: 🔔 Remind me to leave on a journey card alerts 5 minutes before the journey's start and again at it, using the timetable. If BMTC's live feed then shows one of those buses heading to the stop, the reminder says so; otherwise it says nothing live. Reminders work while the page is open (phones may pause background pages).
