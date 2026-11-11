@@ -6,16 +6,21 @@ Then open: http://127.0.0.1:8765
 
 from __future__ import annotations
 
+import gzip
 import json
+import secrets
+import sqlite3
+import threading
+import time
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from transit import gemini, heading_paths, reliability
-from transit.assistant import handle_assistant
+from transit import collector, gemini, health, heading_paths, kannada, reliability
+from transit.assistant import handle_assistant, handle_snap
 from transit.planner import search_stops
 from transit.otp import plan_journey, router_status, RouterUnavailable
 from transit.network import network_summary
@@ -23,11 +28,12 @@ from transit.bmtc_live import BMTCUnavailable, live_route
 
 ROOT = Path(__file__).parent
 # Bump together with BUILD in static/app.js: the page warns when it talks to an older server.
-BUILD = "2026-11-01-confidence-1"
+BUILD = "2026-11-11-nav-6"
 ROUTES_FILE = ROOT / "data" / "routes.json"
 FEEDBACK_FILE = ROOT / "data" / "feedback.jsonl"
 TRANSIT_DATABASE = ROOT / "data" / "bengaluru_transit.db"
 MAX_BODY_BYTES = 256 * 1024
+MAX_PHOTO_BODY_BYTES = 6 * 1024 * 1024   # Snap & go: one photo (base64) plus context
 DATABASE_HELP = ("The Bengaluru stop database is missing. Run: python scripts/import_gtfs.py data/bmtc_gtfs.zip")
 # Only the web app is served. The project folder also holds the database, logs and backups.
 PUBLIC_PREFIXES = ("/static/",)
@@ -105,6 +111,87 @@ def evaluate_route(route: dict, profile: dict) -> dict:
 
 
 STATIC_ROOT = (ROOT / "static").resolve()
+COMPRESSIBLE = {".js", ".css", ".html", ".json", ".webmanifest", ".svg", ".txt", ".md"}
+_gzip_cache: dict = {}
+_answer_cache: dict = {}
+_answer_lock = threading.Lock()
+
+
+def gzipped_file(path: Path) -> bytes:
+    """A text file's gzip bytes, kept in memory until the file changes."""
+    stat = path.stat()
+    key = str(path)
+    cached = _gzip_cache.get(key)
+    if cached and cached[0] == (stat.st_mtime_ns, stat.st_size):
+        return cached[1]
+    data = gzip.compress(path.read_bytes(), compresslevel=6, mtime=0)
+    if len(_gzip_cache) > 64:
+        _gzip_cache.clear()
+    _gzip_cache[key] = ((stat.st_mtime_ns, stat.st_size), data)
+    return data
+
+
+def remembered(key: str, seconds: float, compute):
+    """compute() once per key for a short time (repeat searches and plans answer instantly).
+    Errors are never remembered."""
+    now = time.monotonic()
+    with _answer_lock:
+        hit = _answer_cache.get(key)
+        if hit and now - hit[0] < seconds:
+            return hit[1]
+    value = compute()
+    with _answer_lock:
+        if len(_answer_cache) > 500:
+            for old in sorted(_answer_cache, key=lambda k: _answer_cache[k][0])[:250]:
+                _answer_cache.pop(old, None)
+        _answer_cache[key] = (now, value)
+    return value
+
+
+def stop_suggestions(text):
+    """Stop search for the From/To boxes. Kannada input is matched against BMTC's own Kannada stop names,
+    and each suggestion carries its Kannada name when BMTC publishes one."""
+    query = text
+    if kannada.has_kannada(text):
+        query = kannada.find_stop_name(TRANSIT_DATABASE, text) or text
+    rows = search_stops(TRANSIT_DATABASE, query)
+    try:
+        names = kannada.kannada_names(TRANSIT_DATABASE)
+    except Exception:
+        names = {}
+    if names:
+        rows = [{**row, "name_kn": names[row["stop_name"]]} if row.get("stop_name") in names else row for row in rows]
+    return rows
+
+
+def warm_up():
+    """Load the stop index, the spelling list and the route engine before the first traveller does."""
+    started = time.monotonic()
+    try:
+        if TRANSIT_DATABASE.exists():
+            from transit import fares
+            fares.ensure_tables(TRANSIT_DATABASE, ROOT / "data" / "bmtc_gtfs.zip")
+            try:
+                kannada.ensure_table(TRANSIT_DATABASE, ROOT / "data" / "bmtc_gtfs.zip")
+                kannada.kannada_names(TRANSIT_DATABASE)
+            except Exception as error:   # Kannada names are optional
+                print(f"Kannada stop names unavailable: {error}", flush=True)
+            search_stops(TRANSIT_DATABASE, "majestic")
+            from transit import places
+            places.close_stop_name(TRANSIT_DATABASE, "whitefeild")
+        for _attempt in range(40):                 # the route engine may still be loading
+            if router_status():
+                break
+            time.sleep(15)
+        if TRANSIT_DATABASE.exists() and router_status():
+            with sqlite3.connect(str(TRANSIT_DATABASE)) as conn:
+                ids = [row[0] for row in conn.execute(
+                    "SELECT stop_id FROM stops WHERE stop_name IN ('Kempegowda Bus Station', 'Shivajinagara Bus Station') LIMIT 2")]
+            if len(ids) == 2:
+                plan_journey(TRANSIT_DATABASE, ids[0], ids[1], {})
+        print(f"Warm-up finished in {time.monotonic() - started:.1f} s", flush=True)
+    except Exception as error:  # warm-up is a nicety; it must never stop the app
+        print(f"Warm-up skipped: {type(error).__name__}: {error}", flush=True)
 
 
 class TransitHandler(SimpleHTTPRequestHandler):
@@ -127,10 +214,16 @@ class TransitHandler(SimpleHTTPRequestHandler):
         return None
 
     def end_headers(self):
-        # Local builds change frequently. Never serve an older interface from browser cache.
-        if urlparse(self.path).path in ("/", "/static/index.html", "/static/app.js", "/static/styles.css", "/static/sw.js",
-                                        "/static/i18n.js"):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/static/") and "v=" in parsed.query:
+            # Versioned files (app.js?v=...) never change under the same address: browsers may keep them.
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        elif parsed.path in ("/", "/static/index.html", "/static/app.js", "/static/styles.css", "/static/sw.js",
+                             "/static/i18n.js"):
+            # The page itself (and unversioned copies) always comes fresh, so a new version shows at once.
             self.send_header("Cache-Control", "no-store, max-age=0")
+        elif parsed.path.startswith(("/static/icons/", "/static/vendor/")):
+            self.send_header("Cache-Control", "public, max-age=604800")
         super().end_headers()
 
     def send_error(self, code, message=None, explain=None):
@@ -153,6 +246,9 @@ class TransitHandler(SimpleHTTPRequestHandler):
         if request_path.startswith("/api/"):
             self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
             return
+        if request_path == "/status":
+            self._status_page(parse_qs(parsed.query))
+            return
         if request_path == "/":
             self.path = "/static/index.html"
         elif request_path in ROOT_FILES:
@@ -161,7 +257,29 @@ class TransitHandler(SimpleHTTPRequestHandler):
         elif not request_path.startswith(PUBLIC_PREFIXES):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
+        if self._send_compressed():
+            return
         super().do_GET()
+
+    def _send_compressed(self) -> bool:
+        """Text files go out gzip-compressed when the browser accepts it (about 4x smaller)."""
+        if "gzip" not in self.headers.get("Accept-Encoding", ""):
+            return False
+        path = Path(self.translate_path(self.path))
+        if path.suffix.lower() not in COMPRESSIBLE or not path.is_file():
+            return False
+        try:
+            body = gzipped_file(path)
+        except OSError:
+            return False
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Vary", "Accept-Encoding")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
 
     def do_HEAD(self):
         request_path = urlparse(self.path).path
@@ -172,6 +290,24 @@ class TransitHandler(SimpleHTTPRequestHandler):
             return
         super().do_HEAD()
 
+    def _status_page(self, query: dict):
+        """Admin status page. Allowed from this computer, or with ?token= matching STATUS_TOKEN."""
+        token = os.environ.get("STATUS_TOKEN", "").strip()
+        # Behind nginx every request comes from 127.0.0.1, so a forwarded request is never "local".
+        forwarded = any(self.headers.get(name) for name in ("X-Forwarded-For", "X-Real-IP", "Forwarded"))
+        local = self.client_address[0] in ("127.0.0.1", "::1") and not forwarded
+        if not local and not (token and secrets.compare_digest(str(query.get("token", [""])[0]), token)):
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+        body = status_page_html().encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Robots-Tag", "noindex")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_api_get(self, request_path: str, query: dict) -> bool:
         if request_path == "/api/health":
             self._json_response({
@@ -179,6 +315,8 @@ class TransitHandler(SimpleHTTPRequestHandler):
                 "database": TRANSIT_DATABASE.exists(),
                 "router": router_status(),
                 "assistant": gemini.status(),
+                "services": {name: health.status(name) for name in health.SERVICES},
+                "collector": {key: value for key, value in collector.status().items() if key != "last_error"},
                 "build": BUILD,
                 "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             })
@@ -220,11 +358,45 @@ class TransitHandler(SimpleHTTPRequestHandler):
         if request_path == "/api/routes":
             self._json_response(load_routes())
             return True
+        if request_path == "/api/nearby":
+            from transit.nearby import nearby
+            try:
+                lat, lon = float(query.get("lat", [""])[0]), float(query.get("lon", [""])[0])
+                radius = int(float(query.get("radius", ["600"])[0]))
+            except (TypeError, ValueError):
+                self._json_response({"error": "Send lat and lon."}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            if not TRANSIT_DATABASE.exists():
+                self._json_response({"stops": [], "error": DATABASE_HELP}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                return True
+            try:
+                # Rounded to ~10 m: the same spot asked again within a minute is answered from memory.
+                key = f"nearby|{round(lat, 4)}|{round(lon, 4)}|{radius}|{datetime.now().strftime('%H%M')}"
+                self._json_response(remembered(key, 60, lambda: nearby(TRANSIT_DATABASE, lat, lon, radius_m=radius)))
+            except ValueError as error:
+                self._json_response({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return True
+        if request_path == "/api/weather":
+            from transit import weather
+            try:
+                lat, lon = float(query.get("lat", [""])[0]), float(query.get("lon", [""])[0])
+                start = datetime.fromisoformat(str(query.get("from", [""])[0]))
+                end = datetime.fromisoformat(str(query.get("to", [""])[0]))
+                if start.tzinfo is None or end.tzinfo is None or end < start or end - start > timedelta(hours=6):
+                    raise ValueError
+            except (TypeError, ValueError):
+                self._json_response({"error": "Send lat, lon, and from/to times with a time zone (at most 6 hours apart)."},
+                                    status=HTTPStatus.BAD_REQUEST)
+                return True
+            self._json_response({"rain": weather.rain_during(lat, lon, start, end), "enabled": weather.enabled()})
+            return True
         if request_path == "/api/stops":
             if not TRANSIT_DATABASE.exists():
                 self._json_response({"stops": [], "error": DATABASE_HELP}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                 return True
-            self._json_response({"stops": search_stops(TRANSIT_DATABASE, query.get("q", [""])[0])})
+            text = str(query.get("q", [""])[0])[:80]
+            self._json_response({"stops": remembered(f"stops|{text.strip().lower()}", 600,
+                                                     lambda: stop_suggestions(text))})
             return True
         return False
 
@@ -258,15 +430,14 @@ class TransitHandler(SimpleHTTPRequestHandler):
                 self._json_response({"error": DATABASE_HELP}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                 return
             profile = payload.get("profile")
+            plan_args = (payload.get("origin_stop_id", ""), payload.get("destination_stop_id", ""),
+                         profile if isinstance(profile, dict) else {}, payload.get("origin_point"),
+                         payload.get("destination_point"))
             try:
-                result = plan_journey(
-                    TRANSIT_DATABASE,
-                    payload.get("origin_stop_id", ""),
-                    payload.get("destination_stop_id", ""),
-                    profile if isinstance(profile, dict) else {},
-                    payload.get("origin_point"),
-                    payload.get("destination_point"),
-                )
+                # The same journey asked again within 45 s (back button, preference toggled back, a shared
+                # link opened twice) is answered from memory; timetable answers change minute by minute.
+                key = "plan|" + json.dumps(plan_args, sort_keys=True, default=str)
+                result = remembered(key, 45, lambda: plan_journey(TRANSIT_DATABASE, *plan_args))
             except RouterUnavailable as error:
                 self._json_response({"error": str(error), "router_unavailable": True},
                                     status=HTTPStatus.SERVICE_UNAVAILABLE)
@@ -292,6 +463,16 @@ class TransitHandler(SimpleHTTPRequestHandler):
                                     status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/snap":
+            # Snap & go: Gemini reads the photo; places and journeys come from the normal planner.
+            payload = self._read_json(MAX_PHOTO_BODY_BYTES)
+            if payload is None:
+                return
+            if not TRANSIT_DATABASE.exists():
+                self._json_response({"error": DATABASE_HELP}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            self._json_response(handle_snap(TRANSIT_DATABASE, payload))
+            return
         if path == "/api/explain":
             # A short Gemini comparison of the options on screen, checked against those options.
             payload = self._read_json()
@@ -322,12 +503,12 @@ class TransitHandler(SimpleHTTPRequestHandler):
 
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
 
-    def _read_json(self) -> dict | None:
+    def _read_json(self, limit: int = MAX_BODY_BYTES) -> dict | None:
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
             length = -1
-        if length < 0 or length > MAX_BODY_BYTES:
+        if length < 0 or length > limit:
             self._json_response({"error": "Request is empty or too large."}, status=HTTPStatus.BAD_REQUEST)
             return None
         try:
@@ -342,12 +523,62 @@ class TransitHandler(SimpleHTTPRequestHandler):
 
     def _json_response(self, payload: dict, status: HTTPStatus = HTTPStatus.OK):
         body = json.dumps(payload).encode("utf-8")
+        compressed = len(body) > 1400 and "gzip" in (self.headers.get("Accept-Encoding", "") if self.headers else "")
+        if compressed:
+            body = gzip.compress(body, compresslevel=5, mtime=0)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+
+def status_page_html() -> str:
+    """Plain HTML: services, timings, recent errors, data sizes. No keys, no traveller data."""
+    import html as h
+    snap = health.snapshot()
+    ai = gemini.status()
+    rows = []
+    for name, info in snap["services"].items():
+        when = lambda t: "—" if not t else datetime.fromtimestamp(t, timezone.utc).astimezone().strftime("%d %b %H:%M:%S")
+        rows.append(f"<tr class='{info['status']}'><td>{h.escape(name)}</td><td><b>{h.escape(info['status'])}</b></td>"
+                    f"<td>{info['ok']} / {info['failed']}</td><td>{info['median_seconds'] if info['median_seconds'] is not None else '—'} s"
+                    f" (max {info['slowest_seconds'] if info['slowest_seconds'] is not None else '—'} s)</td>"
+                    f"<td>{when(info['last_ok'])}</td><td>{when(info['last_error'])}<br><small>{h.escape(info['last_error_text'])}</small></td></tr>")
+    errors = "".join(f"<li>{datetime.fromtimestamp(e['at'], timezone.utc).astimezone().strftime('%d %b %H:%M:%S')} · "
+                     f"<b>{h.escape(e['service'])}</b> · {h.escape(e['error'])}</li>" for e in snap["recent_errors"]) or "<li>None</li>"
+    try:
+        import sqlite3 as sq
+        path = reliability.database_path()
+        with sq.connect(str(path)) as conn:
+            count, days, routes = conn.execute("SELECT count(*), count(distinct day), count(distinct base) FROM observations").fetchone()
+        learned = f"{count} measurements · {routes} routes · {days} days"
+    except Exception:
+        learned = "no measurements yet"
+    gather = collector.status()
+    learned += (f" · background collector: {'on' if gather['running'] else 'off'}, {gather['checks']} checks"
+                f" ({gather['failed']} failed) over {gather['routes']} busy routes"
+                + (f", last {gather['last_route']} at {gather['last_at']}" if gather["last_route"] else "")
+                + (f", paused: {gather['paused']}" if gather["paused"] else "")
+                + (f", last error: {gather['last_error']}" if gather["last_error"] else ""))
+    uptime = snap["uptime_seconds"]
+    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Status · Bengaluru Transit</title><meta http-equiv="refresh" content="30">
+<style>body{{font:15px system-ui,sans-serif;background:#0b1622;color:#e8f4ff;margin:0;padding:20px}}h1{{margin:0 0 4px}}
+table{{border-collapse:collapse;width:100%;margin:14px 0}}td,th{{border-bottom:1px solid #2a3d4f;padding:8px;text-align:left;vertical-align:top}}
+tr.ok b{{color:#62e6a8}}tr.down b{{color:#ff8a98}}tr.unknown b{{color:#9fb3c4}}small{{color:#9fb3c4}}.card{{background:#14212e;border-radius:12px;padding:14px;margin:12px 0}}
+li{{margin:4px 0}}</style>
+<h1>Bengaluru Transit · status</h1><p>Build {h.escape(BUILD)} · running {uptime // 3600} h {uptime % 3600 // 60} min · refreshes every 30 s</p>
+<div class="card"><b>Stop database:</b> {"present" if TRANSIT_DATABASE.exists() else "MISSING"} ·
+<b>Route engine:</b> {"running" if router_status() else "NOT RUNNING"} · <b>Chat:</b> {h.escape(ai.get("engine", ""))} ({h.escape(str(ai.get("model", "")))}) ·
+<b>Learned delays:</b> {h.escape(learned)}</div>
+<table><tr><th>Service</th><th>Now</th><th>Worked / failed</th><th>Typical time</th><th>Last worked</th><th>Last failed</th></tr>{"".join(rows)}</table>
+<div class="card"><b>Recent errors</b><ol>{errors}</ol></div>
+<p><small>Counts reset when the app restarts. Nothing about travellers is recorded here.</small></p></html>"""
 
 
 def main():
@@ -365,6 +596,9 @@ def main():
     except OSError as error:
         raise SystemExit(f"Cannot listen on {host}:{port} ({error}). Close the other copy of the app, then try again.")
     print(f"Adaptive Transit Assistant running at http://{host}:{port}")
+    threading.Thread(target=warm_up, daemon=True).start()
+    if TRANSIT_DATABASE.exists() and collector.start(TRANSIT_DATABASE):
+        print("Delay collector: on (set COLLECTOR=off in .env to stop it)")
     ai = gemini.status()
     print(f"Chat assistant: Gemini ({ai['model']})" if ai["engine"] == "gemini"
           else "Chat assistant: built-in helper (set GEMINI_API_KEY in .env to use Gemini)")

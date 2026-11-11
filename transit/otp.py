@@ -50,6 +50,7 @@ QUERY = '''query($origin: PlanLabeledLocationInput!, $destination: PlanLabeledLo
       to {name lat lon stop {gtfsId}}
       route {gtfsId shortName longName color textColor}
       legGeometry {points}
+      steps { distance relativeDirection absoluteDirection streetName lat lon bogusName }
       stopCalls {
         stopLocation { ... on Stop { gtfsId name lat lon } }
         schedule { time { ... on ArrivalDepartureTime { arrival departure } } }
@@ -57,6 +58,22 @@ QUERY = '''query($origin: PlanLabeledLocationInput!, $destination: PlanLabeledLo
     } } }
   }
 }'''
+
+
+def walk_steps(leg, limit=40):
+    """Turn-by-turn walking directions from the router: [{direction, street, distance, lat, lon}].
+    Unnamed paths ("path", "track", "service road") are kept, marked named=False, so the page can say
+    "the path" instead of reading out a made-up name."""
+    found = []
+    for step in (leg.get('steps') or [])[:limit]:
+        try:
+            lat, lon = float(step['lat']), float(step['lon'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        found.append({'direction': str(step.get('relativeDirection') or 'CONTINUE').upper(),
+                      'street': str(step.get('streetName') or ''), 'named': not step.get('bogusName'),
+                      'distance': round(float(step.get('distance') or 0)), 'lat': lat, 'lon': lon})
+    return found
 
 
 class RouterUnavailable(RuntimeError):
@@ -316,6 +333,7 @@ def build_routes(plan, requested, profile, excluded=()):
                         f"the {leg['to']['name']} stop for your next bus (a different stop with the same name)"
                 record.update(role=role, trivial=distance < TRIVIAL_WALK_METERS,
                               stops=[], stop_count=0)
+                record['walk_steps'] = walk_steps(leg)
                 record['instruction'] = f'Walk {distance} m ({minutes} min) to {target}.'
                 if distance > LONG_WALK_METERS:
                     warnings.append(f'Walk of {distance} m ({minutes} min) - {role.split("_")[0]}.')
@@ -521,7 +539,8 @@ def _post_otp(variables):
     request = Request(ENDPOINT, json.dumps({'query': QUERY, 'variables': variables}).encode(),
                       {'Content-Type': 'application/json'})
     try:
-        with build_opener(ProxyHandler({})).open(request, timeout=25) as response:
+        from transit import health
+        with health.timed('router'), build_opener(ProxyHandler({})).open(request, timeout=25) as response:
             return json.load(response)
     except (URLError, TimeoutError, OSError, ValueError) as exc:
         raise RouterUnavailable('The route engine is not running. Start the project with run-local.cmd '
@@ -580,6 +599,11 @@ def plan_journey(database, origin_id, destination_id, profile=None,
         confidence.annotate(found)
     except Exception as error:   # advice is optional; routing must remain available
         print(f'[Journey confidence] skipped: {type(error).__name__}: {error}', flush=True)
+    try:
+        from transit import window
+        window.annotate(database, found)
+    except Exception as error:   # the arrival range is extra information; routing must remain available
+        print(f'[Arrival window] skipped: {type(error).__name__}: {error}', flush=True)
     routes = _rank(found, profile.get('preference', 'fastest'))
     _add_stretch_lines(database, routes, excluded)
     errors = plan.get('routingErrors', [])
@@ -590,8 +614,15 @@ def plan_journey(database, origin_id, destination_id, profile=None,
         fallback = {'message': f'No scheduled bus journey was found leaving {"now" if is_now else requested_label}. '
                     'Services thin out late at night and early in the morning: try another time with '
                     '"Leave at", or choose a nearby stop.' + (f' (Router said: {detail})' if detail else '')}
-    return {'origin': origin, 'destination': destination, 'routes': routes,
-            'engine': 'OpenTripPlanner', 'data_mode': 'Scheduled buses and road-based walking',
-            'requested': {'iso': requested.isoformat(), 'label': requested_label, 'is_now': is_now},
-            'notice': 'Times come from the BMTC timetable and exclude live traffic. They are not live arrivals.',
-            'fallback': fallback}
+    result = {'origin': origin, 'destination': destination, 'routes': routes,
+              'engine': 'OpenTripPlanner', 'data_mode': 'Scheduled buses and road-based walking',
+              'requested': {'iso': requested.isoformat(), 'label': requested_label, 'is_now': is_now},
+              'notice': 'Times come from the BMTC timetable and exclude live traffic. They are not live arrivals.',
+              'fallback': fallback}
+    if routes:
+        try:
+            from transit import fares
+            fares.compare(database, result)
+        except Exception as error:   # costs are extra information; a journey must never fail because of them
+            print(f'[Fares] skipped: {type(error).__name__}: {error}', flush=True)
+    return result

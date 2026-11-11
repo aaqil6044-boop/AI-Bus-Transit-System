@@ -125,7 +125,7 @@
         if (banner) banner.hidden = true;
     }
 
-    const APP_BUILD = "2026-11-01-confidence-1";   // must match BUILD in app.py
+    const APP_BUILD = "2026-11-11-nav-6";   // must match BUILD in app.py
 
     async function checkHealth() {
         try {
@@ -133,25 +133,56 @@
             if (!result.ok || !result.data) throw new Error("Health check failed");
             state.health = result.data;
             showAssistantEngine(result.data.assistant);
-            if (result.data.build !== APP_BUILD) {
-                // The page updated (browser reload) but the black run-local window still runs old server code.
-                showBanner("This page is newer than the app server that is running. Close the black run-local window, " +
-                    "start run-local.cmd again, then reload this page (Ctrl+F5). Until then some features will not work.");
-            } else if (!result.data.database) {
-                showBanner("The Bengaluru stop database is missing, so searching and planning will not work. " +
-                    "Run: python scripts/import_gtfs.py data/bmtc_gtfs.zip, then restart the app.");
-            } else if (!result.data.router) {
-                showBanner("The route engine is not running, so journeys cannot be planned yet. Start the app with " +
-                    "run-local.cmd, wait for \"Ready\" in its window, then press Check again.");
-            } else {
-                hideBanner();
-            }
+            const message = healthMessage(result.data, APP_BUILD, isLocalSite());
+            if (message) showBanner(message); else hideBanner();
+            scheduleHealthCheck(!!message);
             return result.data;
         } catch (error) {
             state.health = null;
-            showBanner("Cannot reach the local server on port 8765. Start run-local.cmd, then reload this page.");
+            showBanner(isLocalSite()
+                ? "Cannot reach the local server on port 8765. Start run-local.cmd, then reload this page."
+                : "The journey planner cannot be reached right now. Check your internet connection; this page will retry by itself.");
+            scheduleHealthCheck(true);
             return null;
         }
+    }
+
+    const isLocalSite = () => typeof location !== "undefined" && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname || "");
+
+    // Pure: what (if anything) to tell the traveller about the server's health. On the developer's own
+    // computer it says how to fix it; on the public site it says what does not work, in plain words.
+    function healthMessage(health, appBuild, local) {
+        if (!health) return "";
+        if (health.build !== appBuild) {
+            return local
+                ? "This page is newer than the app server that is running. Close the black run-local window, " +
+                  "start run-local.cmd again, then reload this page (Ctrl+F5). Until then some features will not work."
+                : "A new version of the app is being installed. Reload this page in a minute.";
+        }
+        if (!health.database) {
+            return local
+                ? "The Bengaluru stop database is missing, so searching and planning will not work. " +
+                  "Run: python scripts/import_gtfs.py data/bmtc_gtfs.zip, then restart the app."
+                : "Stop search and journey planning are temporarily unavailable. Please try again in a few minutes.";
+        }
+        if (!health.router) {
+            return local
+                ? "The route engine is not running, so journeys cannot be planned yet. Start the app with " +
+                  "run-local.cmd, wait for \"Ready\" in its window, then press Check again."
+                : "Journey planning is temporarily unavailable (the route engine is restarting). Stop search still works; " +
+                  "this page will retry by itself.";
+        }
+        if (health.services?.bmtc === "down") {
+            return "BMTC's live bus feed is not answering right now, so live positions may be missing. " +
+                "Timetable journeys still work.";
+        }
+        return "";
+    }
+
+    // While something is wrong, check again every 20 s and clear the notice once it recovers.
+    function scheduleHealthCheck(problem) {
+        clearTimeout(state.healthTimer);
+        state.healthTimer = setTimeout(() => checkHealth(), problem ? 20000 : 300000);
     }
 
     function normalizeStop(stop) {
@@ -268,13 +299,7 @@
             };
             state.map.on("dragstart", handMoved);
             state.map.on("zoomstart", handMoved);
-            state.map.on("load", () => {
-                state.mapReady = true;
-                addMapAccent();
-                requestAnimationFrame(() => state.map.resize());
-                setTimeout(() => state.map?.resize(), 250);
-                setTimeout(() => state.map?.resize(), 1000);
-            });
+            state.map.on("load", markMapReady);
 
             state.map.on("click", (event) => {
                 if (!state.pickPointType) return;
@@ -336,10 +361,22 @@
         });
     }
 
+    // "load" waits for the first map tiles. Routes only need the map style, so when tiles are slow or
+    // blocked the map is treated as ready once its style has loaded (after a short grace period).
+    function markMapReady() {
+        if (state.mapReady || !state.map) return;
+        state.mapReady = true;
+        addMapAccent();
+        requestAnimationFrame(() => state.map.resize());
+        setTimeout(() => state.map?.resize(), 250);
+        setTimeout(() => state.map?.resize(), 1000);
+    }
+
     async function waitForMap(timeout = 12000) {
         if (state.mapReady && state.map) return state.map;
         const started = Date.now();
         while (!state.mapReady) {
+            if (Date.now() - started > 2500 && state.map?.isStyleLoaded?.()) { markMapReady(); break; }
             if (Date.now() - started > timeout) {
                 throw new Error("The map is still loading. Please refresh the page and try again.");
             }
@@ -489,6 +526,10 @@
                 [routePanel, routePanel.classList.contains("open")],
                 [$("journeyGuide"), !$("journeyGuide").hidden],
                 [$("liveBusPanel"), !$("liveBusPanel").hidden],
+                // Journey mode: a sidebar on wide screens; on phones a banner on top and a sheet at the bottom.
+                [$("navCard"), !!$("navCard") && !$("navCard").hidden && window.innerWidth >= 761],
+                [$("navHead"), !!$("navCard") && !$("navCard").hidden && window.innerWidth < 761],
+                [$("navSheet"), !!$("navCard") && !$("navCard").hidden && window.innerWidth < 761],
                 [chatPanel, chatPanel.classList.contains("open")]
             ];
             panels.forEach(([panel, present]) => {
@@ -617,7 +658,7 @@
             button.setAttribute("aria-selected", "false");
             button.tabIndex = -1;
             button.innerHTML = `
-                <span class="suggestion-main">${escapeHtml(stop.name)}</span>
+                <span class="suggestion-main">${escapeHtml(stop.name)}${stop.name_kn && (state.lang === "kn" || /[\u0C80-\u0CFF]/.test(input.value)) ? ` <span class="suggestion-kn" data-no-translate>${escapeHtml(stop.name_kn)}</span>` : ""}</span>
                 <span class="suggestion-meta">${Number(stop.route_count) ? `${Number(stop.route_count)} bus routes · ` : ""}stop ${escapeHtml(stop.id)}</span>
             `;
 
@@ -1152,6 +1193,9 @@
                 ${leaveSchedule(route)?.possible ? `<button type="button" class="card-tool remind">🔔 ${escapeHtml(tr("Remind me to leave"))}</button>` : ""}
                 <button type="button" class="card-tool share">↗ ${escapeHtml(tr("Share"))}</button>
             </div>
+            ${arrivalWindowHtml(route)}
+            ${walkHintsHtml(route)}
+            ${compareHtml(route, state.compare)}
 
             <div class="route-description">
                 <strong>${escapeHtml(numbers.join("  →  "))}</strong>
@@ -1291,6 +1335,8 @@
         }
 
         routeResults.innerHTML = "";
+        if ($("rainNote")) { $("rainNote").hidden = true; $("rainNote").innerHTML = ""; }
+        state.compare = result?.compare || null;
         clearRouteLayers();
         syncExplainButton();
 
@@ -1299,6 +1345,8 @@
             return;
         }
         rememberTrip(state.origin, state.destination);
+        logTrip(state.origin, state.destination);
+        if ($("usualCard")) $("usualCard").hidden = true;
 
         if (routes.some(route => route.transit !== false && routeLiveScope(route).lines.length)) {
             const liveCard = document.createElement("article");
@@ -1313,8 +1361,11 @@
             routeResults.appendChild(liveCard);
         }
         routes.slice(0, 8).forEach((route, index) => {
-            routeResults.appendChild(createRouteCard(route, index));
+            const card = createRouteCard(route, index);
+            card.setAttribute("data-route-index", String(index));
+            routeResults.appendChild(card);
         });
+        checkRainForTrip(routes.slice(0, 8), revision);
 
         waitForMap().then(() => {
             if (revision !== state.journeyRevision) return;
@@ -1594,7 +1645,7 @@
         };
     }
 
-    async function runAssistantCommand(text, { fromMainBar = false } = {}) {
+    async function runAssistantCommand(text, { fromMainBar = false, endpoint = "/api/assistant", extra = null, label = "" } = {}) {
         const command = String(text || "").trim();
         if (!command) return false;
         if (state.chatBusy) {
@@ -1602,7 +1653,7 @@
             return false;
         }
 
-        addChatMessage(command, "user");
+        addChatMessage(label || command, "user");
         const pending = addChatMessage("", "assistant pending thinking");
         const stopThinking = startThinking(pending);
         state.chatBusy = true;
@@ -1613,10 +1664,11 @@
         const history = (state.chatHistory || []).slice(-6);
         const context = (stop) => stop ? { id: stop.id, name: stop.name, lat: stop.lat, lon: stop.lon, is_map_point: !!stop.is_map_point } : null;
         try {
-            const result = await fetchJson("/api/assistant", {
+            const result = await fetchJson(endpoint, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    ...(extra || {}),
                     message: command,
                     origin: context(state.origin),
                     destination: context(state.destination),
@@ -1643,8 +1695,14 @@
                     note.textContent = data.notice;
                     pending.appendChild(note);
                 }
+                if (data.photo) {
+                    const tag = document.createElement("small");
+                    tag.className = "chat-ai-tag";
+                    tag.textContent = tr("Photo read by Gemini AI · check it matches what you see");
+                    pending.appendChild(tag);
+                }
             }
-            state.chatHistory = [...(state.chatHistory || []), {role: "user", text: command},
+            state.chatHistory = [...(state.chatHistory || []), {role: "user", text: label || command},
                 {role: "assistant", text: String(data.reply || "").slice(0, 300)}].slice(-6);
             if (data.origin || data.destination || data.plan) applyAssistantResult(data);
             if (data.intent === "live") await liveFromChat(data.route, pending);
@@ -1658,10 +1716,12 @@
             } else if (fromMainBar && !chatPanel.classList.contains("open")) {
                 if (data.plan) showStatus(data.summary || data.reply || "Routes ready."); else openChat();
             }
+            speakChatAnswer(pending);
         } catch (error) {
             console.error("Assistant error:", error);
             if (pending) pending.textContent = `${explainFailure(error, "The assistant")} You can also use the From and To boxes.`;
             if (!chatPanel.classList.contains("open")) openChat();
+            speakChatAnswer(pending);
         } finally {
             stopThinking();
             state.chatBusy = false;
@@ -1733,8 +1793,14 @@
                 trackSearchBuses([wanted], [], false, placeOf(state.origin, "your start"),
                     state.destination ? placeOf(state.destination, "your destination") : null, []);
             } else {
-                say(`Tell me where you are starting (or plan a journey first), so I can check which ${wanted} buses are coming your way.`);
-                return;
+                // No start chosen: look for that bus around where the traveller is standing (one GPS fix,
+                // used only by this app's own live check).
+                const here = await currentPlace();
+                if (!here) {
+                    say(`Tell me where you are starting (or plan a journey first), so I can check which ${wanted} buses are coming your way.`);
+                    return;
+                }
+                trackSearchBuses([wanted], [], false, here, state.destination ? placeOf(state.destination, "your destination") : null, []);
             }
         } else if (selected) {
             const scope = routeLiveScope(selected);
@@ -1754,6 +1820,20 @@
         const headline = $("liveBusStatus")?.textContent || "";
         const meta = ($("liveBusMeta")?.textContent || "").split(" · ")[0] || "";
         say(`${headline}${meta && !meta.startsWith("checked") ? `. ${meta.charAt(0).toUpperCase()}${meta.slice(1)}` : ""}. Details and the bus markers are in the live panel.`);
+    }
+
+    // One GPS fix as a place, or null (no permission, no fix, outside Bengaluru, or too rough).
+    function currentPlace() {
+        if (!navigator.geolocation) return Promise.resolve(null);
+        return new Promise(resolve => {
+            try {
+                navigator.geolocation.getCurrentPosition(position => {
+                    const { latitude: lat, longitude: lon, accuracy } = position.coords;
+                    const usable = lat >= 12.65 && lat <= 13.45 && lon >= 77.20 && lon <= 78.00 && accuracy <= 1000;
+                    resolve(usable ? { id: "point-here", name: tr("your location"), lat, lon } : null);
+                }, () => resolve(null), { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
+            } catch { resolve(null); }
+        });
     }
 
     // "From here": take one GPS fix in the browser, use it as the start, and plan if a destination is set.
@@ -1795,7 +1875,7 @@
         }, {enableHighAccuracy: true, timeout: 15000, maximumAge: 30000}));
     }
 
-    function setupVoice(button, input) {
+    function setupVoice(button, input, { fromMainBar = false } = {}) {
         if (!button || !input) return;
 
         const SpeechRecognition =
@@ -1810,7 +1890,7 @@
 
         const recognition = new SpeechRecognition();
         recognition.lang = state.lang === "kn" ? "kn-IN" : "en-IN";
-        state.voice = recognition;
+        state.voices = [...(state.voices || []), recognition];
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;
 
@@ -1834,10 +1914,11 @@
             const text = event.results[0][0].transcript;
             input.value = text;
             input.dispatchEvent(new Event("change"));
-            runAssistantCommand(text);
+            runAssistantCommand(text, { fromMainBar });
         };
 
         button.addEventListener("click", () => {
+            stopSpeaking();                  // never listen to our own voice
             if (state.isListening) recognition.stop();
             else recognition.start();
         });
@@ -2053,6 +2134,9 @@
     function stopJourneyTracking() {
         const journey = state.journey;
         journey.session++;
+        stopPreview();
+        holdScreenOn(false);
+        setJourneyMode(false);
         $("journeyGuide").hidden = true;
         hideGuideBanner(true);
         if (journey.watchId !== null) {
@@ -2069,6 +2153,9 @@
             journey.marker.remove();
             journey.marker = null;
         }
+        journey.markerAt = null;
+        showAccuracy(null, 0);
+        if ($("navRecenter")) $("navRecenter").hidden = true;
         const button = routeResults.querySelector(".start-journey-button.active");
         if (button) {
             button.classList.remove("active");
@@ -2339,7 +2426,9 @@
         const route = state.lastPlan ? normalizeRoutes(state.lastPlan)[state.selectedRouteIndex] : null;
         const coordinates = route ? routeCoordinates(route) : null;
         // Once a live check has framed its buses, do not pull the camera back to the whole route.
-        if (coordinates?.length > 1) setTimeout(() => { if (!state.liveBus.framed) fitCoordinates(coordinates, 600); }, 120);
+        // Navigating and following the traveller: the camera stays on them.
+        const following = () => state.journey.active && journeyModeOn() && state.journey.follow && state.journey.lastPosition;
+        if (coordinates?.length > 1) setTimeout(() => { if (!state.liveBus.framed && !following()) fitCoordinates(coordinates, 600); }, 120);
     }
 
     function syncTrackButtons() {
@@ -2598,7 +2687,12 @@
                 $("liveReliability").textContent = learned?.text ? `📊 ${learned.text}` : "";
                 $("liveReliability").hidden = !learned?.text;
             }
-            if (state.journey.active) checkMissedBus();
+            if ($("liveWindow")) {
+                const windowHtml = live.itinerary ? arrivalWindowHtml(live.itinerary, liveArrivalShift(live.itinerary, approaching)) : "";
+                $("liveWindow").innerHTML = windowHtml;
+                $("liveWindow").hidden = !windowHtml;
+            }
+            if (state.journey.active) { checkMissedBus(); checkTransferGuardian(); checkWaitOrWalk(); }
             $("liveBusFit").hidden = shown.length === 0;
             if (!shown.some(bus => liveBusKey(bus) === live.selectedBusId && bus.freshness === "fresh")) {
                 live.selectedBusId = null;
@@ -2650,8 +2744,14 @@
                 const bearingNow = busBearing(bus);
                 const label = `${bus.group === "alternate" ? "alternate option, " : ""}${bus.route}, bus ${bus.label}, ${bearingNow !== null ? `heading ${compassWord(bearingNow)}, ` : ""}${stale ? "last known position" : "live"}, ${unverifiedBus ? "direction not verified" : "heading to your stop"}`;
                 const previous = previousMarkers.get(id);
+                const reportedAt = Number.isFinite(Number(bus.age_seconds)) ? Date.now() - Number(bus.age_seconds) * 1000 : NaN;
                 if (previous) {
-                    previous.marker.setLngLat([bus.lon, bus.lat]);
+                    // Glide from where the marker is to the new REPORTED position (along the road when known).
+                    const shownAt = previous.marker.getLngLat?.();
+                    const before = (live.lastShown || []).find(item => liveBusKey(item) === id);
+                    const points = shownAt ? glidePath([shownAt.lng, shownAt.lat], [bus.lon, bus.lat], before?.heading?.path) : null;
+                    if (points) glideMarker(previous.marker, points); else previous.marker.setLngLat([bus.lon, bus.lat]);
+                    markReported(previous.marker.getElement(), reportedAt);
                     previous.marker.setOffset?.(offset);
                     previous.marker.getPopup().setHTML(content);
                     previous.marker.getElement().classList.toggle("stale", stale);
@@ -2668,7 +2768,8 @@
                 const element = document.createElement("button");
                 element.type = "button";
                 element.className = `live-bus-marker${stale ? " stale" : ""}${unverifiedBus ? " unverified" : ""}${bus.group === "alternate" ? " alternate" : ""}`;
-                element.innerHTML = `<span class="bus-dir" aria-hidden="true" hidden></span><span aria-hidden="true">🚌</span><span class="bus-route-label">${escapeHtml(bus.route.split(" ")[0])}</span>`;
+                element.innerHTML = `<span class="bus-dir" aria-hidden="true" hidden></span><span aria-hidden="true">🚌</span><span class="bus-route-label">${escapeHtml(bus.route.split(" ")[0])}</span><span class="bus-age" aria-hidden="true" hidden></span>`;
+                markReported(element, reportedAt);
                 setMarkerDirection(element, busBearing(bus));
                 const marker = new maplibregl.Marker({element, anchor: "center", offset})
                     .setLngLat([bus.lon, bus.lat]).setPopup(popup).addTo(state.map);
@@ -2694,6 +2795,7 @@
             });
             previousMarkers.forEach((entry, id) => { if (!retained.has(id)) entry.marker.remove(); });
             spreadBusMarkers();
+            refreshMarkerAges();
             live.lastShown = shown;
             if (live.headingBusId) {
                 const headed = shown.find(bus => liveBusKey(bus) === live.headingBusId);
@@ -2723,11 +2825,15 @@
                 // The soonest few (list is already ordered by BMTC's arrival estimate) and the stop itself.
                 const points = shownMain.slice(0, 3).map(bus => [Number(bus.lon), Number(bus.lat)]);
                 if (boardingPoint) points.push(boardingPoint);
-                frameLivePoints(points, session);
+                // Navigating and following the traveller: the camera stays on them; the buses show as markers.
+                const navigating = state.journey.active && journeyModeOn() && state.journey.follow && state.journey.lastPosition;
+                if (!navigating) frameLivePoints(points, session);
             }
             if (live.selectedBusId) {
                 const selected = shown.find(bus => liveBusKey(bus) === live.selectedBusId);
-                if (selected) state.map.easeTo({center: [selected.lon, selected.lat], zoom: Math.max(state.map.getZoom(), 15), duration: 500});
+                if (selected && !(state.journey.active && state.journey.follow && journeyModeOn())) {
+                    state.map.easeTo({center: [selected.lon, selected.lat], zoom: Math.max(state.map.getZoom(), 15), duration: 500});
+                }
             }
         } catch (error) {
             if (session !== live.session) return;
@@ -2858,6 +2964,16 @@
         $("guideTitle").textContent = guidance.title;
         $("guideDetail").textContent = guidance.detail;
         $("guideGps").textContent = journey.gpsError || guidance.gps;
+        checkTransferGuardian();
+        checkWaitOrWalk();
+        if ($("guideWindow")) {
+            const windowHtml = arrivalWindowHtml(journey.route);
+            if ($("guideWindow").btWindowHtml !== windowHtml) {      // re-render only on change, so an open "why?" stays open
+                $("guideWindow").innerHTML = windowHtml;
+                $("guideWindow").btWindowHtml = windowHtml;
+            }
+            $("guideWindow").hidden = !windowHtml;
+        }
         const names = journey.route.route_numbers?.length
             ? journey.route.route_numbers.join(" → ") : "Selected journey";
         const list = steps.map((step, index) =>
@@ -2868,6 +2984,8 @@
         $("guideNext").disabled = steps.length === 0;
         $("guideNext").textContent = last ? tr("Finish") : tr("Next step");
         $("guideFollow").textContent = !journey.lastPosition ? tr("Show my route") : journey.follow ? tr("Following you") : tr("Recenter");
+        renderNavCard();
+        speakGuideStep();
     }
 
     function focusGuideStep(step) {
@@ -2910,9 +3028,11 @@
             return;
         }
         journey.stepIndex = Math.max(0, next);
+        if (delta < 0) journey.autoHold = { step: journey.stepIndex, until: Date.now() + 90000 };
         hideGuideBanner();
         renderJourneyGuide();
-        focusGuideStep(steps[journey.stepIndex]);
+        if (journeyModeOn() && !(journey.follow && journey.lastPosition)) focusNavCamera("step");
+        else focusGuideStep(steps[journey.stepIndex]);
         syncGuideLive();
         checkMissedBus();
     }
@@ -2932,25 +3052,1107 @@
         renderJourneyGuide();
         checkAlightAlert();
         checkMissedBus();
+        navigateOnPosition(position);
+        checkRideTrouble(position);
+        voicePrompts(position);
 
+        const accuracy = Number(position.coords.accuracy);
+        const heading = travellerHeading(position, journey.route, journey.stepIndex);
+        placeTraveller(point, heading);
+        showAccuracy(point, accuracy);
+        // Follow like a car navigator. Coarse fixes (Wi-Fi / network location) are followed too, but from higher up
+        // and never used to move a step. While the traveller handles the map, GPS moves only the arrow.
+        const first = journey.cameraStarted === false;          // set by startJourney: the first fix after Start
+        const userBusy = Number(journey.userMovedUntil) > Date.now() || state.map.isZooming?.() || state.map.isRotating?.();
+        // A coarse fix (Wi-Fi / network location) only places the map once, at the start, so it never jitters around.
+        const usable = accuracy <= 150 || (first && accuracy <= 3000);
+        if (journey.follow && (!userBusy || first) && usable && Date.now() - position.timestamp <= 30000) {
+            followCamera(point, accuracy, heading, first);
+            journey.cameraStarted = true;
+        }
+        renderRecenter();
+    }
+
+    // ---- Journey mode ----
+    // Once a journey starts the map gets the screen. One card says what to do now; the full step list,
+    // live buses and explanations are one tap away ("Details"). Pure summary first, so it is testable.
+    function navSummary(route, stepIndex, position, now = Date.now(), buses = [], tracked = null) {
+        const steps = guideSteps(route);
+        const step = steps[stepIndex];
+        if (!step) return null;
+        const leg = step.leg || {};
+        const metro = leg.role === "metro";
+        const icon = step.kind === "walk" ? "🚶" : step.kind === "board" ? "🚏" : step.kind === "ride" ? (metro ? "🚇" : "🚌") : "🏁";
+        const fix = position?.coords;
+        const fresh = fix && Number(fix.accuracy) <= 150 && now - Number(position.timestamp) <= 60000;
+        const here = fresh ? [Number(fix.longitude), Number(fix.latitude)] : null;
+        const target = step.target && [Number(step.target.lon), Number(step.target.lat)];
+        const toTarget = here && target?.every(Number.isFinite) ? Math.round(haversineMeters(here, target)) : null;
+        let line = "";
+        let maneuver = null;
+        if (step.kind === "walk" && (maneuver = nextManeuver(leg, fresh ? position : null))) {
+            // Turn-by-turn: the next turn is the instruction; the stop you are walking to stays in view.
+            const place = step.target?.name || leg.to?.name || "";
+            line = [maneuver.meters !== null ? tr("In {m} m", { m: maneuver.meters }) : "",
+                    toTarget !== null ? tr("{place}: {m} m · about {min} min", { place, m: toTarget, min: Math.max(1, Math.round(toTarget / 75)) })
+                        : tr("To {place}: about {min} min ({m} m)", { place, min: leg.duration_minutes ?? "—", m: leg.distance_m ?? "—" })]
+                .filter(Boolean).join(" · ");
+        } else if (step.kind === "walk") {
+            line = toTarget !== null
+                ? tr("{m} m to go · about {min} min", { m: toTarget, min: Math.max(1, Math.round(toTarget / 75)) })
+                : tr("About {min} min on foot ({m} m)", { min: leg.duration_minutes ?? "—", m: leg.distance_m ?? "—" });
+        } else if (step.kind === "board") {
+            line = tr("Scheduled {time}", { time: leg.departure_time || "—" });
+            const lines = new Set([leg.route_name, ...(leg.also_served_by || [])].map(name => String(name || "").split(" ")[0].toUpperCase()));
+            const sameStop = tracked && String(tracked.name || "").trim().toLowerCase() === String(leg.from?.name || "").trim().toLowerCase();
+            if (sameStop && !metro) {
+                const next = (buses || []).filter(bus => bus?.relevance === "approaching" && lines.has(String(bus.route || "").split(" ")[0].toUpperCase()))
+                    .map(bus => ({ bus, minutes: boardEtaMinutes(bus, now) })).filter(item => item.minutes !== null)
+                    .sort((a, b) => a.minutes - b.minutes)[0];
+                if (next) line += " · " + tr("BMTC: {line} in about {n} min", { line: next.bus.route, n: Math.max(0, Math.round(next.minutes)) });
+            }
+            if (toTarget !== null && toTarget > 60) line += " · " + tr("{m} m away", { m: toTarget });
+        } else if (step.kind === "ride") {
+            const stops = Array.isArray(leg.stops) ? leg.stops : [];
+            let left = null;
+            if (here && stops.length > 1) {
+                let best = null;
+                stops.forEach((stop, index) => {
+                    const point = [Number(stop.lon), Number(stop.lat)];
+                    if (!point.every(Number.isFinite)) return;
+                    const meters = haversineMeters(here, point);
+                    if (meters <= 300 && (!best || meters < best.meters)) best = { meters, index };
+                });
+                if (best) left = stops.length - 1 - best.index;
+            }
+            line = left !== null
+                ? (left <= 0 ? tr("Get down here: {to}", { to: leg.to?.name || "" })
+                    : left === 1 ? tr("Next stop: get down at {to}", { to: leg.to?.name || "" })
+                    : tr("{n} stops to go · get down at {to}", { n: left, to: leg.to?.name || "" }))
+                : tr("Get down at {to} · scheduled {time}", { to: leg.to?.name || "", time: leg.arrival_time || "—" });
+        } else {
+            line = tr("Tap Finish when you are there.");
+        }
+        const chips = [];
+        const catching = state.journey?.preview ? null : catchBus(route, stepIndex, position, now, buses, tracked);
+        if (catching) chips.push({ kind: catching.level, text: catchBusText(catching) });
+        const guard = transferGuardian(route, stepIndex, position, now, buses, tracked);
+        if (guard) chips.push({ kind: guard.level, text: guard.level === "miss" ? tr("⚠ May miss the change") : guard.level === "tight" ? tr("⏱ Tight change") : tr("✓ Change looks fine") });
+        const win = arrivalWindow(route);
+        if (win) chips.push({ kind: "arrive", text: win.ranged ? tr("Arrive {from}–{to}", { from: win.from, to: win.to }) : tr("Arrive {time}", { time: win.from }) });
+        else if (route?.arrival_time) chips.push({ kind: "arrive", text: tr("Arrive {time}", { time: route.arrival_time }) });
+        if (!fresh) chips.push({ kind: "gps", text: tr("📍 No GPS fix: use Next step") });
+        else if (Number(fix.accuracy) > 60) chips.push({ kind: "gps", text: tr("📍 GPS ±{m} m", { m: Math.round(Number(fix.accuracy)) }) });
+        if (fix && !fresh && Number(fix.accuracy) <= 3000 && now - Number(position.timestamp) <= 60000) {
+            chips.splice(chips.findIndex(chip => chip.kind === "gps"), 1,
+                { kind: "gps", text: tr("📍 Approximate location (±{m} m): steps will not move by themselves", { m: Math.round(Number(fix.accuracy)) }) });
+        }
+        return { icon: maneuver ? maneuver.icon : icon, title: maneuver ? maneuver.text : (step.short || step.title), line, chips,
+                 then: maneuver?.then || "", turn: !!maneuver, step: stepIndex + 1, total: steps.length, last: stepIndex >= steps.length - 1 };
+    }
+
+    function journeyModeOn() { return !!document.body?.classList?.contains("journey-mode"); }
+
+    // Pure: arrival, what is left, and the next step for the journey card.
+    function navTrip(route, stepIndex, now = Date.now()) {
+        const steps = guideSteps(route);
+        const step = steps[stepIndex] || null;
+        const start = Date.parse(route?.departure_iso || "");
+        const end = Date.parse(route?.arrival_iso || "");
+        const legs = route?.legs || [];
+        const fromLeg = step && Number.isInteger(step.legIndex) ? step.legIndex : legs.length;
+        const meters = legs.slice(fromLeg).reduce((sum, leg) => sum + (Number(leg?.distance_m) || 0), 0);
+        const km = meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${Math.round(meters)} m`;
+        let left;
+        if (Number.isFinite(start) && Number.isFinite(end) && now >= start - 60 * 60000 && now <= end + 30 * 60000) {
+            left = tr("{n} min · {km} left", { n: Math.max(0, Math.round((end - Math.max(now, start)) / 60000)), km });
+        } else if (Number.isFinite(start) && Number.isFinite(end)) {
+            left = tr("{n} min trip · {km}", { n: Math.round((end - start) / 60000), km });
+        } else {
+            left = km;
+        }
+        const win = arrivalWindow(route);
+        const arrive = win?.ranged ? `${win.from}–${win.to}` : (route?.arrival_time || "");
+        const next = steps[stepIndex + 1] || null;
+        const icon = s => s.kind === "walk" ? "🚶" : s.kind === "board" ? "🚏" : s.kind === "ride" ? (s.leg?.role === "metro" ? "🚇" : "🚌") : "🏁";
+        return { arrive, left, then: next ? { icon: icon(next), text: next.short || next.title } : null,
+                 steps: steps.map((s, i) => ({ index: i, icon: icon(s), title: s.short || s.title, kind: s.kind,
+                     when: s.kind === "board" ? (s.leg?.departure_time || "") : s.kind === "ride" ? (s.leg?.arrival_time || "") : "",
+                     note: s.kind === "walk" ? tr("{min} min · {m} m", { min: s.leg?.duration_minutes ?? "—", m: s.leg?.distance_m ?? "—" })
+                         : s.kind === "ride" ? (Number(s.leg?.stop_count) === 1 ? tr("1 stop · {min} min", { min: s.leg?.duration_minutes ?? "—" })
+                             : tr("{n} stops · {min} min", { n: s.leg?.stop_count ?? "—", min: s.leg?.duration_minutes ?? "—" }))
+                         : s.kind === "board" ? tr("Scheduled {time}", { time: s.leg?.departure_time || "—" }) : "",
+                     status: i < stepIndex ? "done" : i === stepIndex ? "now" : "next" })) };
+    }
+
+    // Pure: the journey drawn Google-Maps style: done legs grey, the current leg bold, walks dotted.
+    // Split a line at a distance along it (metres): [travelled part, part still ahead].
+    function splitLine(coordinates, meters) {
+        const done = [coordinates[0]];
+        let walked = 0;
+        for (let i = 0; i < coordinates.length - 1; i++) {
+            const a = coordinates[i], b = coordinates[i + 1];
+            const len = haversineMeters(a, b);
+            if (walked + len >= meters) {
+                const t = len ? (meters - walked) / len : 0;
+                const cut = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+                done.push(cut);
+                return [done, [cut, ...coordinates.slice(i + 1)]];
+            }
+            walked += len;
+            done.push(b);
+        }
+        return [done, [coordinates[coordinates.length - 1], coordinates[coordinates.length - 1]]];
+    }
+
+    function journeyProgressFeatures(route, stepIndex, position = null) {
+        const steps = guideSteps(route);
+        const step = steps[stepIndex];
+        const current = step && Number.isInteger(step.legIndex) ? step.legIndex : Infinity;
+        const features = (route?.legs || []).map((leg, index) => {
+            const coordinates = (leg?.coordinates || []).map(point => [Number(point[0]), Number(point[1])])
+                .filter(point => point.every(Number.isFinite));
+            if (coordinates.length < 2) return null;
+            const status = index < current ? "done" : index === current ? "now" : "next";
+            const kind = leg.transit ? (leg.role === "metro" ? "metro" : "bus") : "walk";
+            const feature = (status, coords) => ({ type: "Feature", properties: { status, kind, color: leg.line_color || "" }, geometry: { type: "LineString", coordinates: coords } });
+            // The part of the current leg already travelled turns grey, like a car navigator.
+            const fix = position?.coords;
+            if (status === "now" && fix && Number(fix.accuracy) <= 80) {
+                const here = [Number(fix.longitude), Number(fix.latitude)];
+                const along = alongLine(coordinates, here);
+                if (along && along.offset <= 80 && along.along > 5) {
+                    const [done, ahead] = splitLine(coordinates, along.along);
+                    return [feature("done", done), feature("now", ahead)];
+                }
+            }
+            return [feature(status, coordinates)];
+        }).filter(Boolean).flat();
+        return { type: "FeatureCollection", features };
+    }
+
+    const JOURNEY_SOURCE = "journey-progress";
+    function updateJourneyMapLayer(on = true) {
+        const map = state.map;
+        if (!map?.getStyle?.()) return;
+        const visibility = on ? "visible" : "none";
+        try {
+            if (!map.getSource(JOURNEY_SOURCE)) {
+                if (!on) return;
+                map.addSource(JOURNEY_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+                const ride = ["!=", ["get", "kind"], "walk"];
+                map.addLayer({ id: "journey-casing", type: "line", source: JOURNEY_SOURCE, filter: ride,
+                    layout: { "line-cap": "round", "line-join": "round" },
+                    paint: { "line-color": "#ffffff", "line-width": ["match", ["get", "status"], "now", 13, "next", 9, 7], "line-opacity": 0.95 } });
+                map.addLayer({ id: "journey-line", type: "line", source: JOURNEY_SOURCE, filter: ride,
+                    layout: { "line-cap": "round", "line-join": "round" },
+                    paint: { "line-color": ["match", ["get", "status"], "done", "#9aa5b1", "now", "#1a73e8", "#5e97f6"],
+                             "line-width": ["match", ["get", "status"], "now", 8, "next", 5.5, 4.5] } });
+                map.addLayer({ id: "journey-walk", type: "line", source: JOURNEY_SOURCE, filter: ["==", ["get", "kind"], "walk"],
+                    layout: { "line-cap": "round", "line-join": "round" },
+                    paint: { "line-color": ["match", ["get", "status"], "done", "#9aa5b1", "#1a73e8"],
+                             "line-width": ["match", ["get", "status"], "now", 6, 4.5], "line-dasharray": [0.1, 2] } });
+            }
+            ["journey-casing", "journey-line", "journey-walk"].forEach(id => {
+                map.setLayoutProperty(id, "visibility", visibility);
+                map.moveLayer(id);
+            });
+            if (on && state.journey.route) map.getSource(JOURNEY_SOURCE).setData(journeyProgressFeatures(state.journey.route, state.journey.stepIndex, state.journey.lastPosition));
+            // The ordinary route lines step back while the journey is drawn on top.
+            state.routeEntries.forEach(entry => {
+                [entry.lineId, entry.glowId].forEach(id => map.getLayer(id) &&
+                    map.setLayoutProperty(id, "visibility", on ? "none" : (state.pathsVisible ? "visible" : "none")));
+            });
+        } catch (error) {
+            console.debug("Journey layer:", error);
+        }
+    }
+
+    function setJourneyMode(on) {
+        const body = document.body;
+        if (!body?.classList) return;
+        body.classList.toggle("journey-mode", !!on);
+        if (!on) body.classList.remove("nav-expanded");
+        body.classList.remove("journey-details");
+        if ($("navCard")) $("navCard").hidden = !on;
+        if ($("navControls")) $("navControls").hidden = !on;
+        if ($("navBackToMap")) $("navBackToMap").hidden = true;
+        updateJourneyMapLayer(!!on);
+        if (!on) { if ($("navAlert")) $("navAlert").hidden = true; return; }
+        setNavExpanded(false);
+        setNavTab("steps");
+        observeNavCard();
+    }
+
+    function showJourneyDetails(on) {
+        const body = document.body;
+        if (!body?.classList || !state.journey.active) return;
+        body.classList.toggle("journey-details", !!on);
+        $("navCard").hidden = !!on;
+        $("navControls").hidden = !!on;
+        $("navBackToMap").hidden = !on;
+        if (on && phoneLayout()) { setDockTab("guide"); setDockHeight(dockSnapHeights().half); }
+        if (!on) setTimeout(() => focusNavCamera("step"), 50);
+    }
+
+    // Phone: the sheet opens to show steps, live buses and trip info. Wide screens always show them.
+    function setNavExpanded(open) {
+        const card = $("navCard");
+        if (!card?.classList) return;
+        card.classList.toggle("expanded", !!open);
+        document.body?.classList?.toggle("nav-expanded", !!open);
+        $("navGrab")?.setAttribute("aria-expanded", String(!!open));
+        $("navMore")?.setAttribute("aria-expanded", String(!!open));
+        if ($("navMore")) $("navMore").textContent = open ? tr("⌄ Map") : tr("⌃ Steps");
+        observeNavCard();
+    }
+
+    function setNavTab(name) {
+        document.querySelectorAll?.(".nav-tab").forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
+        document.querySelectorAll?.(".nav-pane").forEach(pane => { pane.hidden = pane.dataset.pane !== name; });
+        state.journey.navTab = name;
+    }
+
+    // The card's height decides how much map is free (map padding and the button stack).
+    let navObserved = false;
+    function observeNavCard() {
+        const card = $("navCard");
+        const update = () => {
+            const box = card && !card.hidden ? card.getBoundingClientRect?.() : null;
+            const phone = phoneLayout();
+            const sheet = $("navSheet")?.getBoundingClientRect?.();
+            document.documentElement?.style?.setProperty("--nav-space", `${Math.round(phone && sheet ? sheet.height : 0) + 16}px`);
+            document.documentElement?.style?.setProperty("--nav-side", `${Math.round(!phone && box ? box.width + 22 : 0)}px`);
+            const head = $("navHead")?.getBoundingClientRect?.();
+            document.documentElement?.style?.setProperty("--nav-head", `${Math.round(phone && head ? head.bottom : 0) + 10}px`);
+        };
+        update();
+        if (!navObserved && card && typeof ResizeObserver === "function") {
+            navObserved = true;
+            const observer = new ResizeObserver(update);
+            [card, $("navSheet"), $("navHead")].forEach(element => element && observer.observe(element));   // phones: the card itself has no box
+        }
+    }
+
+    function navLiveHtml(buses, tracked) {
+        const list = (buses || []).filter(bus => bus?.relevance === "approaching")
+            .map(bus => ({ bus, minutes: boardEtaMinutes(bus) }))
+            .sort((a, b) => (a.minutes ?? 999) - (b.minutes ?? 999) || (a.bus.stops_away ?? 999) - (b.bus.stops_away ?? 999)).slice(0, 8);
+        const stop = tracked?.name || tr("your stop");
+        if (!list.length) {
+            return `<p class="nav-empty">${escapeHtml(tr("No bus heading to {stop} is reported by BMTC right now. Buses appear here as soon as BMTC publishes their positions.", { stop }))}</p>`;
+        }
+        return `<p class="nav-pane-note">${escapeHtml(tr("Heading to {stop} · BMTC live positions", { stop }))}</p>` + list.map(({ bus, minutes }, i) => {
+            const fresh = bus.freshness === "fresh";
+            const when = minutes === null ? "" : minutes <= 0 ? tr("due now") : tr("~{n} min", { n: Math.round(minutes) });
+            const away = Number.isFinite(bus.stops_away) ? (bus.stops_away === 0 ? tr("at the stop") : tr("{n} stops away", { n: bus.stops_away })) : "";
+            return `<button type="button" class="nav-bus${fresh ? "" : " stale"}" data-nav-bus="${i}"><span class="nav-bus-route">${escapeHtml(bus.route || "")}</span>` +
+                `<span class="nav-bus-info"><b>${escapeHtml(when || away || tr("on its way"))}</b><small>${escapeHtml([when ? away : "", fresh ? tr("live") : tr("position old")].filter(Boolean).join(" · "))}</small></span></button>`;
+        }).join("");
+    }
+
+    function navInfoHtml(route) {
+        const parts = [];
+        const windowHtml = arrivalWindowHtml(route);
+        if (windowHtml) parts.push(windowHtml.replace("<details ", "<details open "));
+        const guard = transferGuardian(route, state.journey.stepIndex, state.journey.lastPosition, Date.now(),
+            state.liveBus?.lastShown || [], state.liveBus?.boardingStop || null);
+        if (guard) parts.push(`<p class="guide-transfer ${guard.level}">${escapeHtml(guardianText(guard))}</p>`);
+        (route?.legs || []).map(leg => waitOrWalk(leg)).filter(Boolean)
+            .forEach(advice => parts.push(`<p class="guide-walk">${escapeHtml(waitOrWalkText(advice))}</p>`));
+        if (state.rain?.text) parts.push(`<p class="nav-rain">${escapeHtml(state.rain.text)}</p>`);
+        const fare = route?.bus_fare;
+        if (fare?.total != null) parts.push(`<p class="nav-pane-note">${escapeHtml(tr("Bus fare: {fare}", { fare: `${fare.exact ? "" : "~"}₹${fare.total}` }))}</p>`);
+        parts.push(`<p class="nav-pane-note">${escapeHtml(tr("Times are from the BMTC timetable; buses can run early or late. Live positions come from BMTC."))}</p>`);
+        if (state.journey.lastPosition && !state.journey.preview) parts.unshift(`<button type="button" class="nav-reroute" data-nav-reroute>${escapeHtml(tr("🔄 Find a new way from here"))}</button>`);
+        return parts.join("");
+    }
+
+    function renderNavCard() {
+        const journey = state.journey;
+        if (!journey.active || !$("navCard")) return;
+        const live = state.liveBus || {};
+        const buses = live.lastShown || [];
+        const nav = navSummary(journey.route, journey.stepIndex, journey.lastPosition, Date.now(), buses, live.boardingStop || null);
+        if (!nav) return;
+        const trip = navTrip(journey.route, journey.stepIndex);
+        $("navIcon").textContent = nav.icon;
+        $("navTitle").textContent = nav.title;
+        $("navLine").textContent = nav.line;
+        const thenText = nav.then || trip.then?.text || "";
+        $("navThen").hidden = !thenText;
+        if (thenText) $("navThen").innerHTML = `<span>${escapeHtml(tr("Then"))}</span> ${nav.then ? "" : trip.then.icon} ${escapeHtml(thenText)}`;
+        $("navIcon").classList.toggle("turn", !!nav.turn);
+        const delay = journey.preview ? null : liveDelay(journey.route, journey.stepIndex, journey.lastPosition, Date.now(), buses, live.boardingStop || null);
+        const plannedEnd = Date.parse(journey.route?.arrival_iso || "");
+        if (delay && Math.abs(delay.minutes) >= 2 && Number.isFinite(plannedEnd)) {
+            const moved = new Date(plannedEnd + delay.minutes * 60000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+            $("navArrive").textContent = tr("Arrive ~{time}", { time: moved });
+            $("navLeft").textContent = `${delay.minutes > 0 ? tr("~{n} min late", { n: delay.minutes }) : tr("~{n} min early", { n: -delay.minutes })} · ${delay.source === "gps" ? tr("from your GPS") : tr("BMTC live")} · ${tr("timetable {time}", { time: journey.route.arrival_time || "" })}`;
+        } else {
+            $("navArrive").textContent = trip.arrive ? tr("Arrive {time}", { time: trip.arrive }) : "";
+            $("navLeft").textContent = trip.left;
+        }
+        renderRideStops();
+        $("navProgress").innerHTML = `<span>${escapeHtml(tr("Step {n} of {total}", { n: nav.step, total: nav.total }))}</span>` +
+            `<span class="nav-dots">${Array.from({ length: nav.total }, (_, i) => `<i class="${i < nav.step - 1 ? "done" : i === nav.step - 1 ? "now" : ""}"></i>`).join("")}</span>`;
+        $("navChips").innerHTML = nav.chips.filter(chip => chip.kind !== "arrive")
+            .map(chip => `<span class="nav-chip ${chip.kind}">${escapeHtml(chip.text)}</span>`).join("");
+        $("navPrev").disabled = journey.stepIndex === 0;
+        $("navNext").textContent = nav.last ? tr("✓ Finish") : tr("Next step ▶");
+        const stepsHtml = `<ol class="nav-steps">${trip.steps.map(step => `<li class="${step.status}"><button type="button" data-nav-step="${step.index}">` +
+            `<span class="nav-step-icon">${step.status === "done" ? "✓" : step.icon}</span><span class="nav-step-text"><b>${escapeHtml(step.title)}</b>` +
+            `<small>${escapeHtml([step.note, step.kind === "ride" && step.when ? tr("arrive {time}", { time: step.when }) : ""].filter(Boolean).join(" · "))}</small></span></button></li>`).join("")}</ol>`;
+        if ($("navPaneSteps").btHtml !== stepsHtml) { $("navPaneSteps").innerHTML = stepsHtml; $("navPaneSteps").btHtml = stepsHtml; }
+        const liveHtml = navLiveHtml(buses, live.boardingStop || null);
+        if ($("navPaneLive").btHtml !== liveHtml) { $("navPaneLive").innerHTML = liveHtml; $("navPaneLive").btHtml = liveHtml; }
+        const count = buses.filter(bus => bus?.relevance === "approaching").length;
+        $("navLiveCount").textContent = count ? String(count) : "";
+        const infoHtml = navInfoHtml(journey.route);
+        if ($("navPaneInfo").btHtml !== infoHtml) { $("navPaneInfo").innerHTML = infoHtml; $("navPaneInfo").btHtml = infoHtml; }
+        renderNavBuses();
+        if ($("navNoGps")) $("navNoGps").hidden = !!journey.lastPosition || !!journey.preview || !journey.gpsWaitedLong;
+        const follow = !!journey.follow && !!journey.lastPosition;
+        $("navFollow").classList.toggle("active", follow);
+        $("navFollow").setAttribute("aria-pressed", String(follow));
+        updateJourneyMapLayer(true);
+    }
+
+    function showNavAlert(text, kind, action) {
+        const box = $("navAlert");
+        if (!box) return;
+        box.className = `nav-alert ${kind}`;
+        box.innerHTML = `<span>${escapeHtml(text)}</span>` +
+            (action ? `<button type="button" class="nav-alert-action">${escapeHtml(action.label)}</button>` : "") +
+            `<button type="button" class="nav-alert-close" aria-label="${escapeHtml(tr("Dismiss"))}">✕</button>`;
+        box.hidden = false;
+        box.querySelector?.(".nav-alert-action")?.addEventListener("click", () => { box.hidden = true; action?.run?.(); });
+        box.querySelector?.(".nav-alert-close")?.addEventListener("click", () => { box.hidden = true; if ($("guideAlert")) $("guideAlert").hidden = true; });
+    }
+
+    // Camera for journey mode: "follow" = GPS, "step" = the current step, "whole" = the whole trip.
+    function focusNavCamera(mode) {
+        const journey = state.journey;
+        if (!journey.active || !state.map) return;
+        if (mode === "follow") {
+            journey.follow = true;
+            journey.zoomChosen = false;
+            journey.userMovedUntil = 0;
+            renderRecenter();
+            if (journey.lastPosition) {
+                const fix = journey.lastPosition.coords;
+                followCamera([fix.longitude, fix.latitude], Number(fix.accuracy), travellerHeading(journey.lastPosition, journey.route, journey.stepIndex), true);
+            }
+            else fitCoordinates(routeCoordinates(journey.route), 650);
+        } else {
+            journey.follow = false;
+            renderRecenter();
+            const step = guideSteps(journey.route)[journey.stepIndex];
+            let points = mode === "whole" ? routeCoordinates(journey.route) : null;
+            if (mode === "step" && step) {
+                const leg = step.leg || {};
+                points = Array.isArray(leg.coordinates) && leg.coordinates.length > 1 && step.kind !== "board"
+                    ? leg.coordinates.slice() : [];
+                const target = step.target && [Number(step.target.lon), Number(step.target.lat)];
+                if (target?.every(Number.isFinite)) points.push(target);
+                const fix = journey.lastPosition?.coords;
+                if (fix && Number.isFinite(fix.longitude)) points.push([fix.longitude, fix.latitude]);
+                if (points.length === 1) {
+                    state.map.easeTo({ center: points[0], zoom: 16.5, pitch: 0, bearing: 0, duration: 600 });
+                    renderNavCard();
+                    return;
+                }
+            }
+            if (points?.length > 1) fitCoordinates(points, 650);
+        }
+        renderNavCard();
+        renderJourneyGuide();
+    }
+
+    function setupJourneyMode() {
+        const journey = state.journey;
+        const zoom = (direction) => {
+            if (!state.map) return;
+            journey.zoomChosen = true;
+            journey.userMovedUntil = Date.now() + 2500;
+            direction > 0 ? state.map.zoomIn({ duration: 250 }) : state.map.zoomOut({ duration: 250 });
+        };
+        $("navZoomIn")?.addEventListener("click", () => zoom(1));
+        $("navVoice")?.addEventListener("click", () => $("quickVoiceBtn")?.click());
+        const togglePreview = () => (journey.preview ? stopPreview() : startPreview());
+        $("navPreviewBtn")?.addEventListener("click", togglePreview);
+        $("navNoGpsPreview")?.addEventListener("click", togglePreview);
+        $("navPreviewStop")?.addEventListener("click", stopPreview);
+        $("navSpeak")?.addEventListener("click", () => {
+            setTalkMode(!state.talk);
+            $("navSpeak").classList.toggle("active", !!state.talk);
+            $("navSpeak").textContent = state.talk ? "🔊" : "🔈";
+        });
+        document.addEventListener?.("visibilitychange", () => { if (journey.active && document.visibilityState === "visible") holdScreenOn(true); });
+        $("navZoomOut")?.addEventListener("click", () => zoom(-1));
+        $("navFollow")?.addEventListener("click", () => focusNavCamera("follow"));
+        $("navStep")?.addEventListener("click", () => focusNavCamera("step"));
+        $("navWhole")?.addEventListener("click", () => focusNavCamera("whole"));
+        $("navPrev")?.addEventListener("click", () => goToGuideStep(-1));
+        $("navNext")?.addEventListener("click", () => goToGuideStep(1));
+        $("navDetails")?.addEventListener("click", () => showJourneyDetails(true));
+        $("navBackToMap")?.addEventListener("click", () => showJourneyDetails(false));
+        $("navMore")?.addEventListener("click", () => setNavExpanded(!$("navCard").classList.contains("expanded")));
+        $("navGrab")?.addEventListener("click", () => setNavExpanded(!$("navCard").classList.contains("expanded")));
+        document.querySelectorAll?.(".nav-tab").forEach(tab => tab.addEventListener("click", () => { setNavTab(tab.dataset.tab); setNavExpanded(true); }));
+        $("navPaneSteps")?.addEventListener("click", event => {
+            const button = event.target?.closest?.("[data-nav-step]");
+            if (!button) return;
+            const index = Number(button.dataset.navStep);
+            if (Number.isInteger(index) && index !== journey.stepIndex) goToGuideStep(index - journey.stepIndex);
+            if (phoneLayout()) setNavExpanded(false);
+        });
+        $("navPaneInfo")?.addEventListener("click", event => {
+            if (event.target?.closest?.("[data-nav-reroute]") && journey.lastPosition) rerouteFromHere(journey.lastPosition);
+        });
+        $("navPaneLive")?.addEventListener("click", event => {
+            const button = event.target?.closest?.("[data-nav-bus]");
+            if (!button || !state.map) return;
+            const bus = (state.liveBus.lastShown || []).filter(item => item?.relevance === "approaching")
+                .map(item => ({ bus: item, minutes: boardEtaMinutes(item) }))
+                .sort((a, b) => (a.minutes ?? 999) - (b.minutes ?? 999) || (a.bus.stops_away ?? 999) - (b.bus.stops_away ?? 999))[Number(button.dataset.navBus)]?.bus;
+            if (!Number.isFinite(Number(bus?.lon))) return;
+            journey.follow = false;
+            if (phoneLayout()) setNavExpanded(false);
+            state.map.easeTo({ center: [Number(bus.lon), Number(bus.lat)], zoom: Math.max(state.map.getZoom(), 15), pitch: 0, duration: 650 });
+            renderNavCard();
+        });
+        // Ending needs a second tap, so a stray touch never drops the guidance mid-trip.
+        $("navEnd")?.addEventListener("click", () => {
+            const button = $("navEnd");
+            if (button.classList.contains("confirm")) { button.classList.remove("confirm"); button.textContent = tr("✕ End journey"); stopJourneyTracking(); return; }
+            button.classList.add("confirm");
+            button.textContent = tr("Tap again to end");
+            setTimeout(() => { button.classList.remove("confirm"); button.textContent = tr("✕ End journey"); }, 3500);
+        });
+        window.addEventListener?.("resize", () => { if (journeyModeOn()) observeNavCard(); });
+        // Pinch, wheel, drag or rotate by the traveller: GPS following must not fight it.
+        ["zoomstart", "rotatestart", "pitchstart"].forEach(name => state.map?.on(name, event => {
+            if (!event.originalEvent || !journey.active) return;
+            journey.userMovedUntil = Date.now() + 8000;
+            if (name === "zoomstart") journey.zoomChosen = true;
+        }));
+        state.map?.on("dragstart", event => {
+            if (!event.originalEvent || !journey.active) return;
+            journey.userMovedUntil = Date.now() + 8000;
+            if (journeyModeOn() && journey.lastPosition) { journey.follow = false; renderRecenter(); renderNavCard(); }
+        });
+        $("navRecenter")?.addEventListener("click", () => focusNavCamera("follow"));
+    }
+
+    // ---- Turn-by-turn walking (router's own steps: left/right onto named streets) ----
+    const TURN_ICONS = { LEFT: "↰", HARD_LEFT: "↰", SLIGHTLY_LEFT: "↖", RIGHT: "↱", HARD_RIGHT: "↱", SLIGHTLY_RIGHT: "↗",
+        CONTINUE: "↑", DEPART: "↑", UTURN_LEFT: "⤺", UTURN_RIGHT: "⤻", CIRCLE_CLOCKWISE: "⟳", CIRCLE_COUNTERCLOCKWISE: "⟲",
+        ELEVATOR: "⇅", ENTER_STATION: "↘", EXIT_STATION: "↗", FOLLOW_SIGNS: "↑" };
+    function streetLabel(step) {
+        const name = String(step?.street || "").trim();
+        return !name || step.named === false ? tr("the path") : name;
+    }
+    function turnText(step) {
+        const street = streetLabel(step);
+        switch (step?.direction) {
+            case "LEFT": case "HARD_LEFT": return tr("Turn left onto {street}", { street });
+            case "RIGHT": case "HARD_RIGHT": return tr("Turn right onto {street}", { street });
+            case "SLIGHTLY_LEFT": return tr("Keep left onto {street}", { street });
+            case "SLIGHTLY_RIGHT": return tr("Keep right onto {street}", { street });
+            case "UTURN_LEFT": case "UTURN_RIGHT": return tr("Turn around onto {street}", { street });
+            case "DEPART": return tr("Head along {street}", { street });
+            default: return tr("Continue onto {street}", { street });
+        }
+    }
+
+    // Pure: the next turn on a walking leg, and how far it is from where the traveller is.
+    function nextManeuver(leg, position) {
+        const steps = Array.isArray(leg?.walk_steps) ? leg.walk_steps : [];
+        const coords = leg?.coordinates || [];
+        if (!steps.length || coords.length < 2) return null;
+        const fix = position?.coords;
+        const here = fix && Number(fix.accuracy) <= 150 ? [Number(fix.longitude), Number(fix.latitude)] : null;
+        const at = here ? alongLine(coords, here) : null;
+        const along = at && at.offset <= 120 ? at.along : null;
+        const marks = steps.map(step => ({ step, along: alongLine(coords, [step.lon, step.lat])?.along ?? 0 }));
+        const length = alongLine(coords, coords[coords.length - 1])?.length ?? 0;
+        const destination = leg.to?.name || "";
+        if (along === null) {
+            // No usable GPS: the first instruction of the walk.
+            const first = marks[0];
+            return { icon: TURN_ICONS[first.step.direction] || "↑", text: turnText(first.step), meters: null,
+                     then: marks[1] ? turnText(marks[1].step) : tr("Arrive at {place}", { place: destination }) };
+        }
+        const upcoming = marks.filter((mark, index) => index > 0 && mark.along > along + 8);
+        if (!upcoming.length) {
+            return { icon: "📍", text: tr("Arrive at {place}", { place: destination }), meters: Math.max(0, Math.round(length - along)), then: "" };
+        }
+        const next = upcoming[0];
+        return { icon: TURN_ICONS[next.step.direction] || "↑", text: turnText(next.step), meters: Math.max(0, Math.round(next.along - along)),
+                 then: upcoming[1] ? turnText(upcoming[1].step) : tr("Arrive at {place}", { place: destination }) };
+    }
+
+    // ---- Navigation camera and the "you" arrow ----
+    // Which way is the traveller facing? Moving: the GPS course. Standing: the phone's compass if it has one,
+    // else the direction of the route just ahead (so the map is turned the way you are going, like a navigator).
+    function routeAheadBearing(route, stepIndex, point) {
+        const step = guideSteps(route)[stepIndex];
+        const coords = (step?.leg?.coordinates || []).map(p => [Number(p[0]), Number(p[1])]).filter(p => p.every(Number.isFinite));
+        if (coords.length < 2 || !point) return null;
+        const at = alongLine(coords, point);
+        if (!at || at.offset > 150) return null;
+        const [, ahead] = splitLine(coords, at.along);
+        const [nearer] = splitLine(ahead, Math.min(40, Math.max(5, at.length - at.along)));
+        const from = nearer[0], to = nearer[nearer.length - 1];
+        return from && to && (from[0] !== to[0] || from[1] !== to[1]) ? bearingBetween(from, to) : null;
+    }
+
+    function travellerHeading(position, route, stepIndex) {
+        const fix = position?.coords || {};
+        const point = [Number(fix.longitude), Number(fix.latitude)];
+        if (Number.isFinite(fix.heading) && fix.heading !== null && Number(fix.speed) > 1) return { deg: Number(fix.heading), from: "course" };
+        const compass = state.journey.compass;
+        if (compass && Date.now() - compass.at < 3000) return { deg: compass.deg, from: "compass" };
+        const ahead = routeAheadBearing(route, stepIndex, point);
+        return ahead === null ? null : { deg: ahead, from: "route" };
+    }
+
+    function circlePolygon(center, meters, sides = 48) {
+        const coords = [];
+        const dLat = meters / 111195, dLon = meters / (111195 * Math.cos(center[1] * Math.PI / 180));
+        for (let i = 0; i <= sides; i++) {
+            const a = (i / sides) * 2 * Math.PI;
+            coords.push([center[0] + dLon * Math.cos(a), center[1] + dLat * Math.sin(a)]);
+        }
+        return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [coords] } };
+    }
+
+    function showAccuracy(point, meters) {
+        const map = state.map;
+        if (!map?.getStyle?.()) return;
+        try {
+            const data = point && meters > 15 ? { type: "FeatureCollection", features: [circlePolygon(point, Math.min(meters, 3000))] }
+                : { type: "FeatureCollection", features: [] };
+            if (!map.getSource("journey-accuracy")) {
+                map.addSource("journey-accuracy", { type: "geojson", data });
+                map.addLayer({ id: "journey-accuracy-fill", type: "fill", source: "journey-accuracy", paint: { "fill-color": "#1a73e8", "fill-opacity": 0.12 } });
+                map.addLayer({ id: "journey-accuracy-line", type: "line", source: "journey-accuracy", paint: { "line-color": "#1a73e8", "line-opacity": 0.35, "line-width": 1 } });
+            } else {
+                map.getSource("journey-accuracy").setData(data);
+            }
+        } catch (error) { console.debug("Accuracy circle:", error); }
+    }
+
+    // The "you" marker: a blue arrow pointing the way you face, gliding between GPS fixes.
+    function placeTraveller(point, heading) {
+        const journey = state.journey;
+        if (!state.map || typeof maplibregl === "undefined") return;
         if (!journey.marker) {
             const element = document.createElement("div");
-            element.className = "transit-user-location-marker";
-            element.innerHTML = `<div class="transit-user-location-pulse"></div><div class="transit-user-location-dot"></div>`;
-            journey.marker = new maplibregl.Marker({ element, anchor: "center" }).setLngLat(point).addTo(state.map);
+            element.className = "nav-you";
+            element.innerHTML = `<div class="nav-you-halo"></div><svg viewBox="0 0 40 40" aria-hidden="true"><path class="nav-you-arrow" d="M20 4 L33 34 L20 27 L7 34 Z"/></svg><div class="nav-you-dot"></div>`;
+            journey.marker = new maplibregl.Marker({ element, anchor: "center", rotationAlignment: "map", pitchAlignment: "map" })
+                .setLngLat(point).addTo(state.map);
+            journey.markerAt = point;
         }
-        journey.marker.setLngLat(point);
+        const element = journey.marker.getElement?.();
+        element?.classList?.toggle("has-heading", heading !== null);
+        if (heading !== null) journey.marker.setRotation?.(heading.deg);
+        const from = journey.markerAt || point;
+        journey.markerAt = point;
+        if (typeof requestAnimationFrame !== "function") { journey.marker.setLngLat(point); return; }
+        cancelAnimationFrame(journey.glide || 0);
+        const start = performance.now();
+        const step = now => {
+            const t = Math.min(1, (now - start) / 900);
+            journey.marker?.setLngLat([from[0] + (point[0] - from[0]) * t, from[1] + (point[1] - from[1]) * t]);
+            if (t < 1) journey.glide = requestAnimationFrame(step);
+        };
+        journey.glide = requestAnimationFrame(step);
+    }
 
-        const heading = position.coords.heading;
-        if (journey.follow && position.coords.accuracy <= 150 && Date.now() - position.timestamp <= 30000) state.map.easeTo({
-            center: point,
-            zoom: Math.max(state.map.getZoom(), 16.5),
-            bearing: Number.isFinite(heading) && position.coords.speed > 1 ? heading : state.map.getBearing(),
-            pitch: 52,
-            duration: 700,
-            essential: true
+    // Camera while following: close, tilted, turned the way you go, with you in the lower part of the free map.
+    function followCamera(point, accuracy, heading, first = false) {
+        const journey = state.journey;
+        const map = state.map;
+        if (!map) return;
+        const coarse = !(accuracy <= 150);
+        const pad = journeyModeOn() ? mapPadding() : { top: 80, right: 40, bottom: 80, left: 40 };
+        if (!coarse) {
+            const free = Math.max(0, (window.innerHeight || 800) - pad.top - pad.bottom);
+            pad.top += Math.round(free * 0.3);                 // you sit below the centre, so more road ahead is visible
+        }
+        const zoom = coarse ? Math.min(15, Math.max(12, 17 - Math.log2(Math.max(accuracy, 150) / 75))) : (journey.zoomChosen ? map.getZoom() : 17.3);
+        map[first ? "flyTo" : "easeTo"]({
+            center: point, zoom, padding: pad,
+            bearing: coarse || !heading ? (first ? 0 : map.getBearing()) : heading.deg,
+            pitch: coarse ? 0 : 55,
+            duration: first ? 1400 : 900, essential: true
         });
+    }
 
+    function renderRecenter() {
+        const journey = state.journey;
+        const pill = $("navRecenter");
+        if (!pill) return;
+        pill.hidden = !(journey.active && journeyModeOn() && journey.lastPosition && !journey.follow);
+    }
+
+    // Phones: the compass, for which way you face while standing still (Android: absolute orientation; iOS asks first).
+    function startCompass() {
+        const journey = state.journey;
+        if (journey.compassOn || typeof window === "undefined" || !("DeviceOrientationEvent" in window)) return;
+        const handle = event => {
+            const deg = Number.isFinite(event.webkitCompassHeading) ? event.webkitCompassHeading
+                : event.absolute && Number.isFinite(event.alpha) ? (360 - event.alpha) % 360 : null;
+            if (deg === null) return;
+            const last = journey.compass;
+            journey.compass = { deg, at: Date.now() };
+            if (journey.marker && (!last || Math.abs(deg - last.deg) > 4) && !(Number(journey.lastPosition?.coords?.speed) > 1)) {
+                journey.marker.setRotation?.(deg);
+                journey.marker.getElement?.()?.classList?.add("has-heading");
+            }
+        };
+        const listen = () => {
+            window.addEventListener("deviceorientationabsolute", handle);
+            window.addEventListener("deviceorientation", handle);
+            journey.compassOn = true;
+        };
+        try {
+            if (typeof DeviceOrientationEvent.requestPermission === "function") {
+                DeviceOrientationEvent.requestPermission().then(answer => { if (answer === "granted") listen(); }).catch(() => {});
+            } else listen();
+        } catch { /* no compass */ }
+    }
+
+    // ---- On the bus: stop countdown, how late you are running, missed stop / wrong bus ----
+    // BMTC buses rarely announce stops, so the app does: which stops are behind you, the next one, and yours.
+    function rideStops(route, stepIndex, position, now = Date.now()) {
+        const step = guideSteps(route)[stepIndex];
+        if (step?.kind !== "ride") return null;
+        const leg = step.leg || {};
+        const coords = leg.coordinates || [];
+        const stops = (Array.isArray(leg.stops) ? leg.stops : []).map(stop => ({ ...stop, lat: Number(stop.lat), lon: Number(stop.lon) }))
+            .filter(stop => Number.isFinite(stop.lat) && Number.isFinite(stop.lon));
+        if (stops.length < 2) return null;
+        const fix = position?.coords;
+        const usable = fix && Number(fix.accuracy) <= 120 && now - Number(position.timestamp) <= 45000;
+        const here = usable ? [Number(fix.longitude), Number(fix.latitude)] : null;
+        const marks = stops.map(stop => alongLine(coords, [stop.lon, stop.lat])?.along ?? null);
+        const me = here ? alongLine(coords, here) : null;
+        const onLine = me && me.offset <= 150 && marks.every(mark => mark !== null);
+        const passedCount = onLine ? marks.filter((mark, index) => index > 0 && mark < me.along - 25).length + 1 : 0;
+        // Lateness: when you passed the last stop behind you, against its timetabled time.
+        let late = null;
+        if (onLine && passedCount > 1) {
+            const last = stops[passedCount - 1];
+            const at = stopClock(leg, last.time);
+            if (Number.isFinite(at)) late = Math.round((now - at) / 60000);
+        }
+        const list = stops.map((stop, index) => ({
+            name: stop.stop_name || stop.name || "", time: stop.time || "",
+            status: index === stops.length - 1 ? (onLine && index < passedCount ? "passed" : "getoff")
+                : !onLine ? (index === 0 ? "passed" : "later")
+                : index < passedCount ? "passed" : index === passedCount ? "next" : "later"
+        }));
+        const left = onLine ? Math.max(0, stops.length - passedCount) : null;
+        return { stops: list, left, late: late !== null && late >= -5 && late <= 90 ? late : null, onLine: !!onLine, getOff: leg.to?.name || "" };
+    }
+
+    // Where the trip really is: arrival moved by how late you are running (GPS on the bus, else BMTC's
+    // live estimate for the bus you are waiting for). null when there is no evidence.
+    function liveDelay(route, stepIndex, position, now = Date.now(), buses = [], tracked = null) {
+        const steps = guideSteps(route);
+        const step = steps[stepIndex];
+        if (!step) return null;
+        if (step.kind === "ride") {
+            const ride = rideStops(route, stepIndex, position, now);
+            if (ride?.late !== null && ride?.late !== undefined) return { minutes: ride.late, source: "gps" };
+        }
+        const board = step.kind === "board" ? step : step.kind === "walk" && steps[stepIndex + 1]?.kind === "board" ? steps[stepIndex + 1] : null;
+        const leg = board?.leg;
+        if (leg && tracked && String(tracked.name || "").trim().toLowerCase() === String(leg.from?.name || "").trim().toLowerCase()) {
+            const planned = Date.parse(leg.departure_iso || "");
+            const lines = new Set([leg.route_name, ...(leg.also_served_by || [])].map(name => String(name || "").split(" ")[0].toUpperCase()));
+            const soonest = (buses || []).filter(bus => bus?.relevance === "approaching" && lines.has(String(bus.route || "").split(" ")[0].toUpperCase()))
+                .map(bus => parseBmtcTime(bus.board_eta)?.getTime()).filter(Number.isFinite)
+                .filter(at => Math.abs(at - planned) <= 60 * 60000).sort((a, b) => Math.abs(a - planned) - Math.abs(b - planned))[0];
+            if (Number.isFinite(soonest) && Number.isFinite(planned)) return { minutes: Math.round((soonest - planned) / 60000), source: "live" };
+        }
+        return null;
+    }
+
+    // Riding: past your stop, or on a bus that has left your route.
+    function rideTrouble(route, stepIndex, position) {
+        const step = guideSteps(route)[stepIndex];
+        const fix = position?.coords;
+        if (step?.kind !== "ride" || !fix || !(Number(fix.accuracy) <= 80)) return null;
+        const leg = step.leg || {};
+        const here = [Number(fix.longitude), Number(fix.latitude)];
+        const line = alongLine(leg.coordinates, here);
+        if (!line) return null;
+        const stop = leg.to && [Number(leg.to.lon), Number(leg.to.lat)];
+        const fromStop = stop?.every(Number.isFinite) ? haversineMeters(here, stop) : Infinity;
+        if (line.along >= line.length - 30 && fromStop > 250 && fromStop < 3000) return { kind: "passed", stop: leg.to?.name || "", meters: Math.round(fromStop) };
+        if (line.offset > 400) return { kind: "off", meters: line.offset, line: leg.route_name || "" };
+        return null;
+    }
+
+    function renderRideStops() {
+        const box = $("navStops");
+        if (!box) return;
+        const journey = state.journey;
+        const ride = rideStops(journey.route, journey.stepIndex, journey.lastPosition);
+        if (!ride) { box.hidden = true; return; }
+        if (journey.preview) ride.late = null;              // simulated position: no lateness claims
+        const upcoming = ride.stops.map((stop, index) => ({ ...stop, index })).filter(stop => stop.status !== "passed");
+        const shown = upcoming.slice(0, 3);
+        const lastShown = shown[shown.length - 1];
+        if (lastShown && lastShown.status !== "getoff") shown.push(upcoming[upcoming.length - 1]);
+        const hiddenCount = Math.max(0, upcoming.length - shown.length);
+        const label = ride.left === null ? tr("Stops on this ride (timetable times)")
+            : ride.left <= 1 ? tr("Your stop is next") : tr("{n} stops to your stop", { n: ride.left });
+        const html = `<div class="nav-stops-head">${escapeHtml(label)}${ride.late !== null && Math.abs(ride.late) >= 2
+                ? ` · <b>${escapeHtml(ride.late > 0 ? tr("running ~{n} min late", { n: ride.late }) : tr("running ~{n} min early", { n: -ride.late }))}</b>` : ""}</div>` +
+            `<ol class="nav-stop-list">${shown.map((stop, i) => (i === shown.length - 1 && hiddenCount && stop.status === "getoff"
+                ? `<li class="more">${escapeHtml(hiddenCount === 1 ? tr("… 1 more stop") : tr("… {n} more stops", { n: hiddenCount }))}</li>` : "") +
+                `<li class="${stop.status}"><i></i><span>${escapeHtml(stop.name)}${stop.status === "getoff" ? " 🏁" : ""}</span><small>${escapeHtml(stop.time)}</small></li>`).join("")}</ol>`;
+        box.hidden = false;
+        if (box.btHtml !== html) { box.innerHTML = html; box.btHtml = html; }
+    }
+
+    // ---- Spoken directions (🔊): each prompt once, at the right moment ----
+    function announce(key, text, urgent = false) {
+        const journey = state.journey;
+        if (!state.talk || !journey.active || !text) return;
+        journey.spoken = journey.spoken || new Set();
+        const full = `${journey.session}:${key}`;
+        if (journey.spoken.has(full)) return;
+        journey.spoken.add(full);
+        speak(text, { urgent });
+    }
+
+    function voicePrompts(position) {
+        const journey = state.journey;
+        if (!state.talk || !journey.active) return;
+        const steps = guideSteps(journey.route);
+        const step = steps[journey.stepIndex];
+        if (!step) return;
+        if (step.kind === "walk") {
+            const turn = nextManeuver(step.leg, position);
+            if (turn && turn.meters !== null) {
+                const id = `turn:${journey.stepIndex}:${turn.text}`;
+                if (turn.meters <= 30) announce(`${id}:now`, turn.text, true);
+                else if (turn.meters <= 130) announce(`${id}:soon`, tr("In {m} metres, {turn}", { m: Math.round(turn.meters / 10) * 10, turn: turn.text.charAt(0).toLowerCase() + turn.text.slice(1) }));
+            }
+            const catching = catchBus(journey.route, journey.stepIndex, position, Date.now(), state.liveBus?.lastShown || [], state.liveBus?.boardingStop || null);
+            if (catching?.level === "miss") announce(`hurry:${journey.stepIndex}`, tr("Hurry: your bus is due in about {n} minutes.", { n: catching.due }));
+        }
+        if (step.kind === "board") {
+            const live = state.liveBus || {};
+            const lines = new Set([step.leg?.route_name, ...(step.leg?.also_served_by || [])].map(name => String(name || "").split(" ")[0].toUpperCase()));
+            const near = (live.lastShown || []).filter(bus => bus?.relevance === "approaching" && lines.has(String(bus.route || "").split(" ")[0].toUpperCase()))
+                .sort((a, b) => (a.stops_away ?? 99) - (b.stops_away ?? 99))[0];
+            if (near && Number(near.stops_away) <= 2) {
+                announce(`bus-near:${journey.stepIndex}`, Number(near.stops_away) === 0
+                    ? tr("Your bus {line} is at the stop.", { line: near.route }) : tr("Your bus {line} is {n} stops away.", { line: near.route, n: near.stops_away }));
+            }
+        }
+        if (step.kind === "ride") {
+            const ride = rideStops(journey.route, journey.stepIndex, position);
+            if (ride?.left !== null && ride?.left !== undefined && ride.left >= 2 && ride.left <= 3) {
+                announce(`left:${journey.stepIndex}:${ride.left}`, tr("{n} stops to {stop}.", { n: ride.left, stop: ride.getOff }));
+            }
+        }
+    }
+
+    function checkRideTrouble(position) {
+        const journey = state.journey;
+        const trouble = rideTrouble(journey.route, journey.stepIndex, position);
+        if (!trouble) { journey.offCount = 0; return; }
+        journey.navNotes = journey.navNotes || new Set();
+        // Two readings in a row, so a single GPS jump never raises the alarm.
+        journey.offCount = (journey.offCount || 0) + 1;
+        if (journey.offCount < 2) return;
+        const key = `${trouble.kind}:${journey.stepIndex}`;
+        if (journey.navNotes.has(key)) return;
+        journey.navNotes.add(key);
+        const text = trouble.kind === "passed"
+            ? tr("You may have passed {stop} (about {m} m back). Get off at the next stop.", { stop: trouble.stop, m: trouble.meters })
+            : tr("This bus seems to have left your route (about {m} m away). Check the bus number.", { m: trouble.meters });
+        showGuideBanner(text, "urgent", { label: tr("Find a new way from here"), run: () => rerouteFromHere(position) });
+        announce(key, text, true);
+        if (!journey.preview) notify(tr("Check your bus"), text, { urgent: true, tag: "bt-trouble" });
+    }
+
+    // ---- Navigation engine ----
+    // With a good GPS fix the journey moves on by itself, the way a car navigator does:
+    //  walk → reached the stop; board → the phone is moving along the bus's road away from the stop;
+    //  ride → at the get-off stop. Every automatic move says so and can be undone; weak or old GPS never moves a step.
+    function alongLine(coordinates, point) {
+        const coords = (coordinates || []).map(p => [Number(p[0]), Number(p[1])]).filter(p => p.every(Number.isFinite));
+        if (coords.length < 2 || !point?.every?.(Number.isFinite)) return null;
+        const lat0 = point[1] * Math.PI / 180, my = 6371000 * Math.PI / 180, mx = my * Math.cos(lat0);   // same scale as haversineMeters
+        const xy = p => [(p[0] - point[0]) * mx, (p[1] - point[1]) * my];
+        let walked = 0, best = null;
+        for (let i = 0; i < coords.length - 1; i++) {
+            const [ax, ay] = xy(coords[i]), [bx, by] = xy(coords[i + 1]);
+            const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy);
+            const t = len ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (len * len))) : 0;
+            const offset = Math.hypot(ax + t * dx, ay + t * dy);
+            if (!best || offset < best.offset) best = { offset, along: walked + t * len };
+            walked += len;
+        }
+        return { offset: Math.round(best.offset), along: Math.round(best.along), length: Math.round(walked) };
+    }
+
+    function autoStep(route, stepIndex, position, now = Date.now()) {
+        const steps = guideSteps(route);
+        const step = steps[stepIndex];
+        const fix = position?.coords;
+        if (!step || !fix || step.kind === "arrive" || stepIndex >= steps.length - 1) return null;
+        const accuracy = Number(fix.accuracy);
+        if (!(accuracy <= (step.kind === "ride" ? 80 : 50)) || now - Number(position.timestamp) > 20000) return null;
+        const here = [Number(fix.longitude), Number(fix.latitude)];
+        const leg = step.leg || {};
+        const at = place => {
+            const p = place && [Number(place.lon), Number(place.lat)];
+            return p?.every(Number.isFinite) ? haversineMeters(here, p) : Infinity;
+        };
+        if (step.kind === "walk") {
+            const near = Math.max(25, Math.min(accuracy, 40));
+            return at(step.target) <= near ? { to: stepIndex + 1, reason: "reached", place: step.target?.name || "" } : null;
+        }
+        const line = alongLine(leg.coordinates, here);
+        if (step.kind === "board") {
+            if (!line || line.offset > 50 || line.along < 200 || at(leg.from) < 150) return null;
+            // Walking along the bus's road is not riding it: when the phone reports a walking speed, wait longer.
+            if (fix.speed !== null && fix.speed !== undefined && Number(fix.speed) < 2.5 && line.along < 600) return null;
+            return { to: stepIndex + 1, reason: "onboard", place: leg.route_name || "" };
+        }
+        if (step.kind === "ride") {
+            const stop = at(leg.to);
+            if (stop <= 35 || (line && line.offset <= 60 && line.along >= line.length - 25 && stop <= 80)) {
+                return { to: stepIndex + 1, reason: "alighted", place: leg.to?.name || "" };
+            }
+        }
+        return null;
+    }
+
+    // Walking: far off the walking path (with a good fix) means the traveller has taken another way.
+    function offRoute(route, stepIndex, position) {
+        const step = guideSteps(route)[stepIndex];
+        const fix = position?.coords;
+        if (step?.kind !== "walk" || !fix || !(Number(fix.accuracy) <= 40)) return null;
+        const line = alongLine(step.leg?.coordinates, [Number(fix.longitude), Number(fix.latitude)]);
+        return line && line.offset > 80 ? line.offset : null;
+    }
+
+    // Walking to a stop: will you make the bus? BMTC's live estimate when there is one, else the timetable.
+    function catchBus(route, stepIndex, position, now = Date.now(), buses = [], tracked = null) {
+        const steps = guideSteps(route);
+        const step = steps[stepIndex], next = steps[stepIndex + 1];
+        if (step?.kind !== "walk" || next?.kind !== "board" || next.leg?.role === "metro") return null;
+        const fix = position?.coords;
+        const target = step.target && [Number(step.target.lon), Number(step.target.lat)];
+        const fresh = fix && Number(fix.accuracy) <= 100 && now - Number(position.timestamp) <= 60000 && target?.every(Number.isFinite);
+        const walk = fresh ? Math.max(1, Math.round(haversineMeters([Number(fix.longitude), Number(fix.latitude)], target) / 75))
+            : Number(step.leg?.duration_minutes) || null;
+        if (!walk) return null;
+        const leg = next.leg;
+        const lines = new Set([leg.route_name, ...(leg.also_served_by || [])].map(name => String(name || "").split(" ")[0].toUpperCase()));
+        const sameStop = tracked && String(tracked.name || "").trim().toLowerCase() === String(leg.from?.name || "").trim().toLowerCase();
+        let due = null, line = leg.route_name, source = "timetable";
+        if (sameStop) {
+            const live = (buses || []).filter(bus => bus?.relevance === "approaching" && lines.has(String(bus.route || "").split(" ")[0].toUpperCase()))
+                .map(bus => ({ bus, minutes: boardEtaMinutes(bus, now) })).filter(item => item.minutes !== null)
+                .sort((a, b) => a.minutes - b.minutes);
+            const catchable = live.find(item => item.minutes >= walk - 1) || live[0];
+            if (catchable) { due = Math.round(catchable.minutes); line = catchable.bus.route; source = "live"; }
+        }
+        if (due === null) {
+            const planned = Date.parse(leg.departure_iso || "");
+            if (!Number.isFinite(planned)) return null;
+            due = Math.round((planned - now) / 60000);
+            if (due < -2 || due > 90) return null;              // not today / long gone: nothing useful to say
+        }
+        const spare = due - walk;
+        return { level: spare < 0 ? "miss" : spare < 2 ? "tight" : "ok", due: Math.max(0, due), walk, spare, line, source };
+    }
+
+    function catchBusText(c) {
+        const source = c.source === "live" ? tr("BMTC live") : tr("timetable");
+        if (c.level === "miss") return tr("🏃 {line} due in ~{due} min, {walk} min walk: hurry or take the next one ({source})", { ...c, source });
+        if (c.level === "tight") return tr("⏱ {line} in ~{due} min, {walk} min walk: keep going ({source})", { ...c, source });
+        return tr("✓ {line} in ~{due} min, {walk} min walk: you will make it ({source})", { ...c, source });
+    }
+
+    function navigateOnPosition(position) {
+        const journey = state.journey;
+        if (!journey.active || !journey.route) return;
+        const steps = guideSteps(journey.route);
+        const hold = journey.autoHold;
+        const held = hold && hold.step === journey.stepIndex && Date.now() < hold.until;
+        const move = held ? null : autoStep(journey.route, journey.stepIndex, position);
+        if (move) {
+            const from = journey.stepIndex;
+            journey.stepIndex = move.to;
+            hideGuideBanner();
+            renderJourneyGuide();
+            syncGuideLive();
+            const text = move.reason === "reached" ? tr("You reached {place}. Next: {next}", { place: move.place, next: steps[move.to]?.short || "" })
+                : move.reason === "onboard" ? tr("You are on the move with {place}. Watch for your stop.", { place: move.place })
+                : tr("You are at {place}. Next: {next}", { place: move.place, next: steps[move.to]?.short || "" });
+            announce(`auto:${move.to}`, text);
+            showGuideBanner(text, "info", { label: tr("Undo"), run: () => {
+                journey.stepIndex = from;
+                journey.autoHold = { step: from, until: Date.now() + 90000 };
+                hideGuideBanner();
+                renderJourneyGuide();
+                syncGuideLive();
+            } });
+            try { navigator.vibrate?.([120, 80, 120]); } catch { /* not supported */ }
+        }
+        // Arrived: say it once and offer Finish.
+        const step = steps[journey.stepIndex];
+        journey.navNotes = journey.navNotes || new Set();
+        if (step?.kind === "arrive" && position?.coords && Number(position.coords.accuracy) <= 60 && step.target &&
+            haversineMeters([position.coords.longitude, position.coords.latitude], [Number(step.target.lon), Number(step.target.lat)]) <= 60 &&
+            !journey.navNotes.has("arrived")) {
+            journey.navNotes.add("arrived");
+            announce("arrived", tr("You have arrived at {place}.", { place: step.target.name || "" }));
+            showGuideBanner(tr("🏁 You have arrived at {place}.", { place: step.target.name || "" }), "info",
+                { label: tr("✓ Finish"), run: () => goToGuideStep(1) });
+        }
+        const off = offRoute(journey.route, journey.stepIndex, position);
+        const offKey = `off:${journey.stepIndex}`;
+        if (off && !journey.navNotes.has(offKey) && !journey.preview) {
+            journey.navNotes.add(offKey);
+            showGuideBanner(tr("You are about {m} m off the walking route.", { m: off }), "warn",
+                { label: tr("Re-route from here"), run: () => rerouteFromHere(position) });
+        }
+    }
+
+    function rerouteFromHere(position) {
+        const fix = position?.coords;
+        if (!fix) return;
+        setEndpoint("origin", { name: tr("My location"), lat: fix.latitude, lon: fix.longitude, is_map_point: true });
+        setDepartAt("", { replan: false });
+        showStatus(tr("Finding a new way from where you are…"));
+        planJourney();
+    }
+
+    // Keep the screen on while navigating (where the browser allows it).
+    async function holdScreenOn(on) {
+        const journey = state.journey;
+        try {
+            if (!on) { await journey.wakeLock?.release?.(); journey.wakeLock = null; return; }
+            if (journey.wakeLock || !navigator.wakeLock?.request || document.visibilityState !== "visible") return;
+            journey.wakeLock = await navigator.wakeLock.request("screen");
+            journey.wakeLock.addEventListener?.("release", () => { journey.wakeLock = null; });
+        } catch { journey.wakeLock = null; }
+    }
+
+    // ---- Preview: ride the trip with a simulated position (for a computer without GPS, or to see what is coming) ----
+    const PREVIEW_SPEED = 15;
+    function previewTrack(route) {
+        const track = [];
+        (route?.legs || []).forEach((leg, legIndex) => {
+            const coords = (leg?.coordinates || []).map(p => [Number(p[0]), Number(p[1])]).filter(p => p.every(Number.isFinite));
+            if (coords.length < 2) return;
+            const speed = !leg.transit ? 1.4 : leg.role === "metro" ? 11 : 6.5;
+            if (leg.transit) track.push({ point: coords[0], wait: 6, legIndex, speed: 0 });
+            for (let i = 0; i < coords.length - 1; i++) {
+                const meters = haversineMeters(coords[i], coords[i + 1]);
+                const pieces = Math.max(1, Math.ceil(meters / (speed * PREVIEW_SPEED)));
+                for (let k = 0; k < pieces; k++) {
+                    const t = k / pieces;
+                    track.push({ point: [coords[i][0] + (coords[i + 1][0] - coords[i][0]) * t, coords[i][1] + (coords[i + 1][1] - coords[i][1]) * t],
+                                 heading: bearingBetween(coords[i], coords[i + 1]), speed, legIndex });
+                }
+            }
+            track.push({ point: coords[coords.length - 1], speed: 0, legIndex });
+        });
+        return track;
+    }
+
+    function bearingBetween(a, b) {
+        const toRad = d => d * Math.PI / 180;
+        const y = Math.sin(toRad(b[0] - a[0])) * Math.cos(toRad(b[1]));
+        const x = Math.cos(toRad(a[1])) * Math.sin(toRad(b[1])) - Math.sin(toRad(a[1])) * Math.cos(toRad(b[1])) * Math.cos(toRad(b[0] - a[0]));
+        return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }
+
+    function startPreview() {
+        const journey = state.journey;
+        if (!journey.active) return;
+        stopPreview();
+        const track = previewTrack(journey.route);
+        if (!track.length) { showStatus(tr("This journey has no map path to preview.")); return; }
+        journey.stepIndex = 0;
+        journey.follow = true;
+        journey.zoomChosen = false;
+        journey.navNotes = new Set();
+        journey.alerted = new Set();
+        journey.autoHold = null;
+        let index = 0, waiting = 0;
+        journey.preview = { timer: null };
+        const tick = () => {
+            if (!journey.active || !journey.preview) return;
+            const item = track[index];
+            if (!item) { stopPreview(); showStatus(tr("Preview finished.")); return; }
+            if (item.wait && waiting < item.wait) waiting++;
+            else { waiting = 0; index++; }
+            updateJourneyProgress({ coords: { latitude: item.point[1], longitude: item.point[0], accuracy: 8,
+                heading: Number.isFinite(item.heading) ? item.heading : null, speed: item.speed || 0 }, timestamp: Date.now() });
+        };
+        journey.preview.timer = setInterval(tick, 1000);
+        renderPreviewState();
+        tick();
+    }
+
+    function stopPreview() {
+        const journey = state.journey;
+        if (!journey.preview) return;
+        clearInterval(journey.preview.timer);
+        journey.preview = null;
+        journey.lastPosition = null;
+        journey.marker?.remove?.();
+        journey.marker = null;
+        renderPreviewState();
+        if (journey.active) renderJourneyGuide();
+    }
+
+    function renderPreviewState() {
+        const on = !!state.journey.preview;
+        if ($("navPreviewBar")) $("navPreviewBar").hidden = !on;
+        if ($("navPreviewBtn")) $("navPreviewBtn").textContent = on ? tr("■ Stop preview") : tr("▶ Preview the trip");
+        document.body?.classList?.toggle("nav-preview", on);
+    }
+
+    function renderNavBuses() {
+        const box = $("navBuses");
+        if (!box) return;
+        const journey = state.journey;
+        const steps = guideSteps(journey.route);
+        const step = steps[journey.stepIndex];
+        const boardStep = step?.kind === "board" ? step : step?.kind === "walk" && steps[journey.stepIndex + 1]?.kind === "board" ? steps[journey.stepIndex + 1] : null;
+        const leg = boardStep?.leg;
+        if (!leg || leg.role === "metro" || journey.preview) { box.hidden = true; return; }
+        const live = state.liveBus || {};
+        const lines = new Set([leg.route_name, ...(leg.also_served_by || [])].map(name => String(name || "").split(" ")[0].toUpperCase()));
+        const sameStop = String(live.boardingStop?.name || "").trim().toLowerCase() === String(leg.from?.name || "").trim().toLowerCase();
+        const buses = sameStop ? (live.lastShown || []).filter(bus => bus?.relevance === "approaching" && lines.has(String(bus.route || "").split(" ")[0].toUpperCase()))
+            .map(bus => ({ bus, minutes: boardEtaMinutes(bus) })).sort((a, b) => (a.minutes ?? 999) - (b.minutes ?? 999)).slice(0, 3) : [];
+        const html = buses.length
+            ? `<span class="nav-buses-label">${escapeHtml(tr("Live at {stop}", { stop: leg.from?.name || "" }))}</span>` + buses.map(({ bus, minutes }) =>
+                `<span class="nav-bus-pill${bus.freshness === "fresh" ? "" : " stale"}"><b>${escapeHtml(bus.route || "")}</b> ${escapeHtml(minutes === null
+                    ? (Number.isFinite(bus.stops_away) ? tr("{n} stops away", { n: bus.stops_away }) : tr("on its way"))
+                    : minutes <= 0 ? tr("due now") : tr("~{n} min", { n: Math.round(minutes) }))}</span>`).join("")
+            : `<span class="nav-buses-label">${escapeHtml(tr("No live position yet for {line} at {stop}; timetable {time}.", { line: leg.route_name || "", stop: leg.from?.name || "", time: leg.departure_time || "—" }))}</span>`;
+        box.hidden = false;
+        if (box.btHtml !== html) { box.innerHTML = html; box.btHtml = html; }
     }
 
     function startJourney(route, index) {
@@ -2966,15 +4168,31 @@
         state.journey.stepIndex = 0;
         state.journey.follow = true;
         state.journey.alerted = new Set();
+        {
+            const firstBus = (route.legs || []).find(leg => leg.transit && leg.role !== "metro");
+            logTrip(state.origin, state.destination, { started: true, line: firstBus?.route_name || "",
+                board: firstBus?.from ? { name: firstBus.from.name, lat: Number(firstBus.from.lat), lon: Number(firstBus.from.lon) } : null });
+        }
         hideGuideBanner(true);
         if (state.journey.alertsOn) askNotificationPermission();
         state.journey.gpsError = navigator.geolocation ? "Waiting for device location…" : "Device location is unavailable. Use Next step as you travel.";
         hideRoutePanel();
         $("liveBusPanel").classList.remove("with-routes");
         $("networkPanel").hidden = true;
+        state.journey.zoomChosen = false;
+        state.journey.userMovedUntil = 0;
+        state.journey.autoHold = null;
+        state.journey.navNotes = new Set();
+        state.journey.lastPosition = null;
+        state.journey.cameraStarted = false;
+        setJourneyMode(true);
+        startCompass();
+        holdScreenOn(true);
         const session = ++state.journey.session;
+        state.journey.gpsWaitedLong = false;
         renderJourneyGuide();
-        reframeSelectedRoute();
+        setTimeout(() => { if (state.journey.session === session && !state.journey.lastPosition) focusNavCamera("step"); }, 150);
+        setTimeout(() => { if (state.journey.session === session) { state.journey.gpsWaitedLong = true; renderNavCard(); } }, 8000);
 
         routeResults.querySelectorAll(".start-journey-button").forEach((button) => {
             button.classList.remove("active");
@@ -2989,12 +4207,18 @@
         checkMissedBus();
 
         showStatus(guideSteps(route).length
-            ? "Journey guidance started. Use Next step to confirm boarding and transfers."
+            ? tr("Navigation started. With GPS, steps move on by themselves as you travel; Next step works too.")
             : "Guidance started, but this option has no step list. Use the card's instructions.");
         if (!navigator.geolocation) return;
+        // A quick first fix (a recent one is fine) so the map can zoom to you straight away; the watch refines it.
+        try {
+            navigator.geolocation.getCurrentPosition(
+                position => { if (state.journey.session === session && !state.journey.preview && !state.journey.lastPosition) updateJourneyProgress(position); },
+                () => {}, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 });
+        } catch { /* the watch below still runs */ }
         try {
             state.journey.watchId = navigator.geolocation.watchPosition(
-                position => { if (state.journey.session === session) updateJourneyProgress(position); },
+                position => { if (state.journey.session === session && !state.journey.preview) updateJourneyProgress(position); },
                 (error) => {
                     if (state.journey.session !== session) return;
                     state.journey.gpsError = error?.code === 1
@@ -3578,6 +4802,7 @@
         document.addEventListener("keydown", (event) => {
             if (event.key === "Escape" && state.pickPointType) cancelMapPick();
         });
+        setupJourneyMode();
         $("guideFollow")?.addEventListener("click", () => {
             state.journey.follow = true;
             if (state.journey.lastPosition) updateJourneyProgress(state.journey.lastPosition);
@@ -3711,12 +4936,105 @@
     // ---- Language ----
     function tr(text, vars) {
         let out = String(text);
-        if (state.lang === "kn") {
-            const table = (typeof window !== "undefined" && window.BT_I18N && window.BT_I18N.kn) || {};
-            if (table[out]) out = table[out];
-        }
+        if (state.lang === "kn") out = translateKn(out);
         if (vars) Object.keys(vars).forEach(key => { out = out.split(`{${key}}`).join(String(vars[key] ?? "")); });
         return out;
+    }
+
+    // Kannada: exact phrase, else a sentence pattern ("Leave {time} (in {n} min)"), else each " · " part.
+    // Names and numbers captured by a pattern are kept as they are.
+    let knPatterns = null;
+    function translateKn(text) {
+        const pack = (typeof window !== "undefined" && window.BT_I18N) || {};
+        const table = pack.kn || {};
+        if (Object.prototype.hasOwnProperty.call(table, text)) return table[text];
+        if (!knPatterns) {
+            knPatterns = (pack.knPatterns || []).map(([source, replacement]) => {
+                try { return [new RegExp(`^${source}$`), replacement]; } catch { return null; }
+            }).filter(Boolean);
+        }
+        for (const [pattern, replacement] of knPatterns) {
+            if (pattern.test(text)) return text.replace(pattern, replacement);
+        }
+        const lead = /^(· |• )/.exec(text);
+        if (lead) {
+            const rest = translateKn(text.slice(lead[0].length));
+            if (rest !== text.slice(lead[0].length)) return lead[0] + rest;
+        }
+        if (text.includes(" · ")) {
+            const parts = text.split(" · ");
+            const translated = parts.map(part => translateKn(part));
+            if (translated.some((part, i) => part !== parts[i])) return translated.join(" · ");
+        }
+        const sentences = text.split(/(?<=[.!?…])\s+(?=["“(✓⚠A-Z0-9])/);
+        if (sentences.length > 1) {
+            const translated = sentences.map(part => translateKn(part));
+            if (translated.some((part, i) => part !== sentences[i])) return translated.join(" ");
+        }
+        if (state.debugUntranslated && /[A-Za-z]{3,}/.test(text) && !/[\u0C80-\u0CFF]/.test(text) && text.length < 400) {
+            state.debugUntranslated.add(text);
+        }
+        return text;
+    }
+
+    // In Kannada mode every new or changed piece of interface text is translated where it appears.
+    // Typed text, the traveller's own chat messages and anything marked data-no-translate are left alone.
+    const knOriginals = new WeakMap();
+    const SKIP_TRANSLATE = "script,style,textarea,input,[data-no-translate],.chat-message.user,.maplibregl-ctrl-attrib";
+    function translateTextNode(node) {
+        if (!node || node.nodeType !== 3) return;
+        const parent = node.parentElement;
+        if (!parent || parent.closest?.(SKIP_TRANSLATE)) return;
+        const original = knOriginals.has(node) && knOriginals.get(node).shown === node.data ? knOriginals.get(node).source : node.data;
+        const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(original);
+        if (!match[2] || !/[A-Za-z]/.test(match[2])) return;
+        let translated = match[2];
+        if (state.lang === "kn") {
+            translated = translateKn(match[2]);
+            if (translated === match[2] && /\s{2,}|\n/.test(match[2])) {
+                const flat = translateKn(match[2].replace(/\s+/g, " "));
+                if (flat !== match[2].replace(/\s+/g, " ")) translated = flat;
+            }
+        }
+        const shown = match[1] + translated + match[3];
+        if (shown !== node.data) node.data = shown;
+        if (translated !== match[2]) knOriginals.set(node, { source: original, shown });
+    }
+
+    function translateTree(root) {
+        if (!root || typeof document === "undefined" || !document.createTreeWalker) return;
+        if (root.nodeType === 3) { translateTextNode(root); return; }
+        const walker = document.createTreeWalker(root, 4);
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        nodes.forEach(translateTextNode);
+    }
+
+    function restoreEnglish() {
+        if (typeof document === "undefined" || !document.createTreeWalker) return;
+        const walker = document.createTreeWalker(document.body, 4);
+        while (walker.nextNode()) {
+            const node = walker.currentNode, saved = knOriginals.get(node);
+            if (saved && saved.shown === node.data) { node.data = saved.source; knOriginals.delete(node); }
+        }
+    }
+
+    function setupPageTranslation() {
+        if (typeof MutationObserver !== "function" || typeof document === "undefined" || !document.body) return;
+        if (/[?&]debug\b/.test(location.search || "")) state.debugUntranslated = new Set();
+        let busy = false;
+        const observer = new MutationObserver(records => {
+            if (state.lang !== "kn" || busy) return;
+            busy = true;
+            try {
+                records.forEach(record => {
+                    if (record.type === "characterData") translateTextNode(record.target);
+                    else record.addedNodes.forEach(node => translateTree(node));
+                });
+            } finally { busy = false; }
+        });
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        state.translationObserver = observer;
     }
 
     function applyLanguage(lang) {
@@ -3737,11 +5055,14 @@
             el.setAttribute("title", tr(el.dataset.i18nTitleEn));
             el.setAttribute("aria-label", tr(el.dataset.i18nTitleEn));
         });
-        if (state.voice) state.voice.lang = state.lang === "kn" ? "kn-IN" : "en-IN";
+        (state.voices || []).forEach(recognition => { recognition.lang = state.lang === "kn" ? "kn-IN" : "en-IN"; });
         stepCache = new WeakMap();          // step texts are built in the chosen language
         syncAlertToggle();
         renderPlaceChips();
+        state.usualShown = "";
+        renderUsualCard();
         if (state.journey.active) renderJourneyGuide();
+        if (state.lang === "kn") translateTree(document.body); else restoreEnglish();
     }
 
     // ---- Small, failure-proof browser storage (per device; never required for the app to work) ----
@@ -3832,8 +5153,9 @@
         const saved = savedPlaces();
         const recent = recentTrips();
         const canSave = !!(placeRecord(state.origin) || placeRecord(state.destination));
-        const chips = saved.map((item, index) =>
-            `<button type="button" class="place-chip" data-saved="${index}" title="${escapeHtml(tr("Go to {name}", { name: item.name }))}">${placeIcon(item.label)} ${escapeHtml(tr(item.label))}</button>`);
+        const chips = [`<button type="button" class="place-chip nearby" data-menu-nearby="1">📍 ${escapeHtml(tr("Nearby stops"))}</button>`];
+        chips.push(...saved.map((item, index) =>
+            `<button type="button" class="place-chip" data-saved="${index}" title="${escapeHtml(tr("Go to {name}", { name: item.name }))}">${placeIcon(item.label)} ${escapeHtml(tr(item.label))}</button>`));
         if (recent.length) chips.push(`<button type="button" class="place-chip" data-menu="recent">🕘 ${escapeHtml(tr("Recent"))}</button>`);
         if (canSave) chips.push(`<button type="button" class="place-chip save" data-menu="save">☆ ${escapeHtml(tr("Save place"))}</button>`);
         if (!saved.length && !recent.length && !canSave) chips.push(`<span class="place-hint">${escapeHtml(tr("Save Home and Work for one-tap trips."))}</span>`);
@@ -3866,9 +5188,12 @@
             html = `<div class="qm-title">${escapeHtml(tr("Language"))}</div>` +
                 `<div class="qm-row"><span class="qm-actions"><button type="button" data-lang="en" aria-pressed="${state.lang !== "kn"}">English</button><button type="button" data-lang="kn" aria-pressed="${state.lang === "kn"}">ಕನ್ನಡ</button></span></div>` +
                 (state.installPrompt ? `<button type="button" class="qm-item" data-install="1">📲 ${escapeHtml(tr("Install as an app"))}</button>` : "") +
+                `<div class="qm-title">${escapeHtml(tr("Talk mode"))}</div>` +
+                `<div class="qm-row"><span>${escapeHtml(tr("Speak answers and guidance aloud"))}</span><span class="qm-actions"><button type="button" data-talk="1" aria-pressed="${!!state.talk}">${escapeHtml(state.talk ? tr("On") : tr("Off"))}</button></span></div>` +
                 `<div class="qm-title">${escapeHtml(tr("Saved places"))}</div>` +
                 (saved.length ? saved.map(item => `<div class="qm-row"><span>${placeIcon(item.label)} ${escapeHtml(tr(item.label))} · ${escapeHtml(item.name)}</span><span class="qm-actions"><button type="button" data-remove="${escapeHtml(item.label)}" aria-label="${escapeHtml(tr("Remove {label}", { label: item.label }))}">✕</button></span></div>`).join("")
                     : `<p class="qm-note">${escapeHtml(tr("None yet. Choose a place in From or To, then tap ☆ Save place."))}</p>`) +
+                (tripHistory().length ? `<button type="button" class="qm-item subtle" data-forget="1">${escapeHtml(tr("Forget my trip history (usual trips)"))}</button>` : "") +
                 `<div class="qm-title">${escapeHtml(tr("Travel preference"))}</div><p class="qm-note">${escapeHtml(tr("Choose Less walking, Fewer transfers or Fastest below Find routes."))}</p>`;
         }
         menu.innerHTML = html;
@@ -3886,7 +5211,8 @@
         box?.addEventListener("click", (event) => {
             const chip = event.target?.closest?.("button");
             if (!chip) return;
-            if (chip.dataset.saved !== undefined) { closeQuickMenu(); goToSavedPlace(savedPlaces()[Number(chip.dataset.saved)]); }
+            if (chip.dataset.menuNearby) { closeQuickMenu(); showNearbyStops(); }
+            else if (chip.dataset.saved !== undefined) { closeQuickMenu(); goToSavedPlace(savedPlaces()[Number(chip.dataset.saved)]); }
             else if (chip.dataset.menu) {
                 if (!menu.hidden && menu.dataset.kind === chip.dataset.menu) closeQuickMenu(); else openQuickMenu(chip.dataset.menu, chip);
             }
@@ -3908,6 +5234,14 @@
                 closeQuickMenu();
             } else if (button.dataset.remove) {
                 removeSavedPlace(button.dataset.remove);
+                openQuickMenu("more", $("profileBtn"));
+            } else if (button.dataset.talk) {
+                setTalkMode(!state.talk);
+                openQuickMenu("more", $("profileBtn"));
+            } else if (button.dataset.forget) {
+                store.set(HISTORY_KEY, []);
+                renderUsualCard();
+                showStatus(tr("Trip history cleared on this device."));
                 openQuickMenu("more", $("profileBtn"));
             } else if (button.dataset.lang) {
                 applyLanguage(button.dataset.lang);
@@ -3975,6 +5309,132 @@
         return toTarget <= 700 ? { ...base, level: "soon" } : null;
     }
 
+    // ---- Transfer guardian ----
+    // While riding a bus that has a change after it: how late is this bus running (from GPS against the stop
+    // times, else its usual measured delay), when will the next bus be at the change stop (BMTC live estimate,
+    // else its usual delay, else the timetable), and is there still time? Pure; null without evidence.
+    function stopClock(leg, hhmm) {
+        const base = new Date(leg?.departure_iso || "");
+        const match = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ""));
+        if (!match || !Number.isFinite(base.getTime())) return NaN;
+        const ist = new Date(base.getTime() + 330 * 60000);                    // Bengaluru wall clock
+        const dayStart = Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()) - 330 * 60000;
+        let at = dayStart + (Number(match[1]) * 60 + Number(match[2])) * 60000;
+        if (at < base.getTime() - 6 * 3600000) at += 86400000;                // a ride past midnight
+        return at;
+    }
+
+    function transferGuardian(route, stepIndex, position, now = Date.now(), buses = [], tracked = null) {
+        if (state.journey?.preview && state.journey.route === route) return null;   // simulated position: no lateness claims
+        const steps = guideSteps(route);
+        const step = steps[stepIndex];
+        if (!step || step.kind !== "ride") return null;
+        const legs = route?.legs || [];
+        const leg = step.leg || legs[step.legIndex];
+        const nextIndex = legs.findIndex((item, index) => index > step.legIndex && item?.transit);
+        if (!leg || nextIndex < 0) return null;
+        const next = legs[nextIndex];
+        const plannedArrive = Date.parse(leg.arrival_iso || "");
+        const plannedLeave = Date.parse(next.departure_iso || "");
+        if (!Number.isFinite(plannedArrive) || !Number.isFinite(plannedLeave)) return null;
+        const walk = legs.slice(step.legIndex + 1, nextIndex).reduce((sum, item) => sum + (Number(item?.duration_minutes) || 0), 0);
+
+        // 1. How late is this bus?
+        let late = null, lateFrom = "";
+        const fix = position?.coords;
+        if (fix && Number(fix.accuracy) <= 100 && now - Number(position.timestamp) <= 60000) {
+            const here = [Number(fix.longitude), Number(fix.latitude)];
+            let best = null;
+            (leg.stops || []).forEach(stop => {
+                const lat = Number(stop.lat), lon = Number(stop.lon);
+                if (!Number.isFinite(lat) || !Number.isFinite(lon) || !stop.time) return;
+                const meters = haversineMeters(here, [lon, lat]);
+                if (meters <= 250 && (!best || meters < best.meters)) best = { meters, stop };
+            });
+            const at = best ? stopClock(leg, best.stop.time) : NaN;
+            if (Number.isFinite(at)) { late = Math.max(-3, Math.round((now - at) / 60000)); lateFrom = "gps"; }
+        }
+        if (late === null && Number.isFinite(Number(leg.arrival_reliability?.typical_delay_minutes))) {
+            late = Math.max(0, Math.round(Number(leg.arrival_reliability.typical_delay_minutes)));
+            lateFrom = "usual";
+        }
+
+        // 2. When is the next bus at the change stop? Any line BMTC runs over the same stretch will do.
+        const lines = new Set([next.route_name, ...(next.also_served_by || [])].map(name => String(name || "").split(" ")[0].toUpperCase()));
+        const sameStop = !tracked || String(tracked.name || "").trim().toLowerCase() === String(next.from?.name || "").trim().toLowerCase();
+        let due = null, dueFrom = "", dueLine = next.route_name;
+        if (sameStop) {
+            const ready = plannedArrive + ((late || 0) + walk) * 60000;
+            const live = (buses || []).filter(bus => bus?.relevance === "approaching" && bus.group !== "alternate" &&
+                    lines.has(String(bus.route || "").split(" ")[0].toUpperCase()) && boardEtaMinutes(bus, now) !== null)
+                .map(bus => ({ bus, at: parseBmtcTime(bus.board_eta)?.getTime() }))
+                .filter(item => Number.isFinite(item.at) && Math.abs(item.at - plannedLeave) <= 90 * 60000)
+                .sort((a, b) => a.at - b.at);
+            const catchable = live.find(item => item.at >= ready) || live[live.length - 1];
+            if (catchable) { due = catchable.at; dueFrom = "live"; dueLine = catchable.bus.route; }
+        }
+        if (due === null && Number.isFinite(Number(next.reliability?.typical_delay_minutes))) {
+            due = plannedLeave + Math.max(0, Number(next.reliability.typical_delay_minutes)) * 60000;
+            dueFrom = "usual";
+        }
+        if (due === null) { due = plannedLeave; dueFrom = "timetable"; }
+        if (late === null && dueFrom !== "live") return null;          // nothing measured: no claim either way
+
+        const arriveAt = plannedArrive + (late || 0) * 60000;
+        const spare = Math.round((due - arriveAt) / 60000 - walk);
+        const level = spare < 0 ? "miss" : spare < 3 ? "tight" : "ok";
+        const clock = ms => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+        return { level, spare, late, lateFrom, dueFrom, line: dueLine, plannedLine: next.route_name, stop: next.from?.name || leg.to?.name || "",
+                 getOff: leg.to?.name || "", arrive: clock(arriveAt), due: clock(due), walk, legIndex: step.legIndex,
+                 replan: leg.to_stop_id && Number.isFinite(Number(leg.to?.lat))
+                     ? { stop: { id: String(leg.to_stop_id), name: leg.to.name, lat: Number(leg.to.lat), lon: Number(leg.to.lon) }, at: clock(arriveAt) }
+                     : null };
+    }
+
+    function guardianText(guard) {
+        const how = guard.lateFrom === "gps" ? tr("from your GPS") : guard.lateFrom === "usual" ? tr("its usual delay") : tr("on time");
+        const source = guard.dueFrom === "live" ? tr("BMTC live estimate") : guard.dueFrom === "usual" ? tr("its usual delay") : tr("timetable");
+        const vars = { line: guard.line, stop: guard.stop, arrive: guard.arrive, due: guard.due, n: Math.abs(guard.spare), how, source,
+                       late: delayWords(guard.late || 0) };
+        if (guard.level === "miss") return tr("⚠ You may miss the {line} at {stop}: you reach it about {arrive} ({late}, {how}) and it is due at {due} ({source}).", vars);
+        if (guard.level === "tight") return tr("⏱ Tight change at {stop}: about {n} min to reach the {line} (due {due}, {source}).", vars);
+        return tr("✓ Change at {stop} looks fine: about {n} min to spare for the {line} (due {due}, {source}).", vars);
+    }
+
+    function replanFromTransfer(guard) {
+        if (!guard?.replan) return;
+        setEndpoint("origin", guard.replan.stop);
+        setDepartAt(guard.replan.at, { replan: false });
+        showStatus(tr("Finding other ways from {stop} at about {time}…", { stop: guard.replan.stop.name, time: guard.replan.at }));
+        planJourney();
+    }
+
+    function checkTransferGuardian() {
+        const journey = state.journey;
+        const box = $("guideTransfer");
+        if (!journey.active || !box) return;
+        const live = state.liveBus || {};
+        const guard = transferGuardian(journey.route, journey.stepIndex, journey.lastPosition, Date.now(),
+            live.lastShown || [], live.boardingStop || null);
+        if (!guard) { box.hidden = true; box.textContent = ""; return; }
+        const text = guardianText(guard);
+        box.className = `guide-transfer ${guard.level}`;
+        box.hidden = false;
+        if (box.btText !== text) {
+            box.innerHTML = `<span>${escapeHtml(text)}</span>` + (guard.level !== "ok" && guard.replan
+                ? `<button type="button" class="guide-transfer-replan">${escapeHtml(tr("Find another way from {stop}", { stop: guard.getOff }))}</button>` : "");
+            box.querySelector?.(".guide-transfer-replan")?.addEventListener("click", () => replanFromTransfer(guard));
+            box.btText = text;
+        }
+        // Say it once per change when it turns into a likely miss.
+        journey.guarded = journey.guarded || new Set();
+        const key = `${guard.legIndex}:${guard.level}`;
+        if (guard.level === "miss" && !journey.guarded.has(key)) {
+            journey.guarded.add(key);
+            showGuideBanner(text, "warn", guard.replan ? { label: tr("Find another way from {stop}", { stop: guard.getOff }), run: () => replanFromTransfer(guard) } : null);
+        }
+    }
+
     function checkAlightAlert() {
         const journey = state.journey;
         if (!journey.active || !journey.alertsOn) return;
@@ -3990,7 +5450,8 @@
             : tr("Get ready: {stop} is next. Get off there.", { stop: alert.stop });
         showGuideBanner(text, alert.level === "now" ? "urgent" : "info");
         bannerData().key = `alight:${key}`;
-        notify(alert.level === "now" ? tr("Your stop") : tr("Next stop is yours"), text, { urgent: alert.level === "now", tag: "bt-alight" });
+        announce(`alight:${key}`, text, alert.level === "now");
+        if (!journey.preview) notify(alert.level === "now" ? tr("Your stop") : tr("Next stop is yours"), text, { urgent: alert.level === "now", tag: "bt-alight" });
     }
 
     function bannerData() {
@@ -4004,6 +5465,7 @@
         const banner = $("guideAlert");
         if (!banner) return;
         banner.hidden = true;
+        if ($("navAlert")) $("navAlert").hidden = true;
         bannerData().key = "";
         if (forget) bannerData().dismissed = "";
     }
@@ -4016,6 +5478,7 @@
             (action ? `<button type="button" class="guide-alert-action">${escapeHtml(action.label)}</button>` : "") +
             `<button type="button" class="guide-alert-close" aria-label="${escapeHtml(tr("Dismiss"))}">✕</button>`;
         banner.hidden = false;
+        speak(text, { urgent: kind !== "info" || /Get ready|ಸಿದ್ಧರಾಗಿ/.test(text) });
         // An alert must be seen: open the journey panel at its top (on a phone: its tab, and lift the sheet).
         const guide = $("journeyGuide");
         if (guide?.classList?.contains("folded")) foldDockPanel(guide, false);
@@ -4025,6 +5488,7 @@
             if ($("sideDock")?.classList?.contains("peek")) setDockHeight(dockSnapHeights().half);
         }
         banner.querySelector?.(".guide-alert-action")?.addEventListener("click", action?.run || (() => {}));
+        showNavAlert(text, kind, action);
         banner.querySelector?.(".guide-alert-close")?.addEventListener("click", () => { banner.hidden = true; bannerData().dismissed = bannerData().key || ""; });
     }
 
@@ -4073,7 +5537,7 @@
 
     function checkMissedBus() {
         const journey = state.journey;
-        if (!journey.active) return;
+        if (!journey.active || journey.preview) return;
         const step = guideSteps(journey.route)[journey.stepIndex];
         const leg = step?.kind === "board" ? step.leg : (journey.route?.legs || []).slice((step?.legIndex ?? 0) + 1).find(l => l.transit);
         const lines = leg ? [leg.route_name, ...(leg.also_served_by || [])] : [];
@@ -4177,6 +5641,7 @@
             ? tr("Time to leave for {line} at {stop} (timetable {time}).", { line: info.line || tr("your journey"), stop: info.stop || tr("your stop"), time: info.busTime || info.leaveText }) + live
             : tr("Leave in about 5 min for {line} at {stop} (timetable {time}).", { line: info.line || tr("your journey"), stop: info.stop || tr("your stop"), time: info.busTime || info.leaveText }) + live;
         notify(final ? tr("Time to leave") : tr("Leave soon"), body, { urgent: final, tag: "bt-leave" });
+        speak(body, { urgent: true });
         showStatus(body);
         renderReminderPill(body);
     }
@@ -4293,6 +5758,659 @@
         }
     }
 
+
+    // ---- Talk-only mode: spoken answers and guidance, tap-to-talk ----
+    const speech = () => (typeof window !== "undefined" && window.speechSynthesis) || null;
+
+    function pickVoice(lang) {
+        const synth = speech();
+        const voices = synth?.getVoices?.() || [];
+        const prefix = lang === "kn" ? "kn" : "en";
+        return voices.find(v => v.lang?.toLowerCase().startsWith(`${prefix}-in`)) ||
+            voices.find(v => v.lang?.toLowerCase().startsWith(prefix)) || null;
+    }
+
+    function hasKannadaVoice() { return !!pickVoice("kn")?.lang?.toLowerCase().startsWith("kn"); }
+
+    // Text to speak: no emoji, no "(BMTC estimate)" style brackets noise is kept short.
+    function speakableText(text) {
+        return String(text || "").replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, " ")
+            .replace(/[→⇄]/g, state.lang === "kn" ? " ನಿಂದ " : " to ").replace(/\s+/g, " ").trim().slice(0, 600);
+    }
+
+    function speak(text, { urgent = false } = {}) {
+        const synth = speech();
+        const words = speakableText(text);
+        if (!state.talk || !synth || !words || typeof SpeechSynthesisUtterance === "undefined") return false;
+        try {
+            if (urgent) synth.cancel();
+            const utterance = new SpeechSynthesisUtterance(words);
+            const voice = pickVoice(state.lang);
+            utterance.lang = state.lang === "kn" ? "kn-IN" : "en-IN";
+            if (voice) utterance.voice = voice;
+            utterance.rate = 0.98;
+            synth.speak(utterance);
+            return true;
+        } catch { return false; }
+    }
+
+    function stopSpeaking() { try { speech()?.cancel(); } catch { /* nothing to stop */ } }
+
+    function chatText(item) {
+        if (!item) return "";
+        const parts = [...(item.childNodes || [])].filter(node => node.nodeType === 3).map(node => node.textContent);
+        return (parts.length ? parts.join(" ") : item.textContent || "").trim();
+    }
+
+    function speakChatAnswer(item) { if (state.talk) speak(chatText(item), { urgent: true }); }
+
+    function setTalkMode(on, { announce = true } = {}) {
+        state.talk = !!on;
+        store.set("bt.talk", state.talk);
+        document.body?.classList?.toggle("talk-mode", state.talk);
+        const button = $("talkBtn");
+        if (button) button.hidden = !state.talk;
+        if (!state.talk) { stopSpeaking(); return; }
+        if (announce) {
+            speak(tr("Talk mode is on. Tap the big microphone and say where you want to go, or ask where your bus is."), { urgent: true });
+            if (state.lang === "kn" && !hasKannadaVoice()) {
+                showStatus(tr("This device has no Kannada voice. Install one in your phone's text-to-speech settings; until then answers may be read in English."), true);
+            }
+        }
+    }
+
+    // Speak each new guidance step once, in the chosen language.
+    function speakGuideStep() {
+        const journey = state.journey;
+        if (!state.talk || !journey.active) return;
+        const key = `${journey.session}:${journey.stepIndex}`;
+        if (journey.spokenStep === key) return;
+        journey.spokenStep = key;
+        const step = guideSteps(journey.route)[journey.stepIndex];
+        if (step) speak(`${step.title}. ${String(step.detail || "").split(/(?<=\.)\s/)[0]}`);
+    }
+
+    // ---- Snap & go ----
+    // Shrink the photo in the browser (faster upload, less data); only the picture goes to the server.
+    function shrinkPhoto(file, maxSide = 1280, quality = 0.82) {
+        return new Promise((resolve, reject) => {
+            if (!file || !/^image\//.test(file.type || "")) { reject(new Error(tr("Choose a photo."))); return; }
+            const url = URL.createObjectURL(file);
+            const image = new Image();
+            image.onload = () => {
+                try {
+                    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+                    const canvas = document.createElement("canvas");
+                    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+                    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+                    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+                    const data = canvas.toDataURL("image/jpeg", quality);
+                    URL.revokeObjectURL(url);
+                    resolve(data.slice(data.indexOf(",") + 1));
+                } catch (error) { URL.revokeObjectURL(url); reject(error); }
+            };
+            image.onerror = () => { URL.revokeObjectURL(url); reject(new Error(tr("That file could not be opened as a photo."))); };
+            image.src = url;
+        });
+    }
+
+    async function snapAndGo(file) {
+        if (state.chatBusy) { showStatus(tr("Still working on your last request."), true); return; }
+        let image;
+        try { image = await shrinkPhoto(file); }
+        catch (error) { showStatus(error.message || tr("That file could not be opened as a photo."), true); return; }
+        if (!chatPanel.classList.contains("open")) openChat();
+        await runAssistantCommand("photo", { endpoint: "/api/snap", extra: { image, mime: "image/jpeg" },
+            label: tr("📷 Photo sent (bus, stop board or address)"), fromMainBar: true });
+    }
+
+    function setupSnap() {
+        const input = $("snapInput");
+        $("snapBtn")?.addEventListener("click", () => input?.click());
+        $("chatSnapBtn")?.addEventListener("click", () => input?.click());
+        $("quickSnapBtn")?.addEventListener("click", () => input?.click());
+        // Phone top-bar 🎙: open the chat and listen there, so the reply is visible above the routes.
+        $("quickVoiceBtn")?.addEventListener("click", () => {
+            openChat();
+            const voice = $("chatVoiceBtn");
+            if (voice && voice.style.display !== "none" && !state.isListening) voice.click();
+        });
+        input?.addEventListener("change", () => {
+            const file = input.files?.[0];
+            input.value = "";
+            if (file) snapAndGo(file);
+        });
+    }
+
+    // ---- My usual commute (learned on this device only) ----
+    const HISTORY_KEY = "bt.trips.v1";
+    const tripKey = (from, to) => `${from.name}|${from.lat.toFixed(3)},${from.lon.toFixed(3)}>${to.name}|${to.lat.toFixed(3)},${to.lon.toFixed(3)}`;
+    const istParts = (ms) => {
+        const shifted = new Date(ms + 330 * 60000);            // Bengaluru time, whatever the device clock zone
+        return { day: shifted.toISOString().slice(0, 10), minute: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
+                 weekend: [0, 6].includes(shifted.getUTCDay()) };
+    };
+
+    function tripHistory() {
+        const list = store.get(HISTORY_KEY, []);
+        return Array.isArray(list) ? list.filter(item => item && placeRecord(item.from) && placeRecord(item.to) && Number.isFinite(item.at)) : [];
+    }
+
+    function logTrip(origin, destination, { line = "", board = null, started = false, at = Date.now() } = {}) {
+        const from = placeRecord(origin), to = placeRecord(destination);
+        if (!from || !to || /^My location/.test(from.name) || /^My location/.test(to.name)) return;
+        const list = tripHistory();
+        // One entry per trip per half hour (re-plans and the Start press count once; Start adds the bus).
+        const recent = list.find(item => tripKey(item.from, item.to) === tripKey(from, to) && Math.abs(item.at - at) < 30 * 60000);
+        if (recent) {
+            if (started) { recent.started = true; recent.line = line || recent.line; recent.board = board || recent.board; }
+        } else {
+            list.push({ from, to, at, line, board, started });
+        }
+        store.set(HISTORY_KEY, list.slice(-200));
+    }
+
+    // Pure: the trip this traveller usually makes around now (weekday/weekend kept apart), or null.
+    // Needs the same trip on at least 3 different days at about the same time.
+    function usualTrip(history, now = Date.now()) {
+        const here = istParts(now);
+        const groups = new Map();
+        (history || []).forEach(item => {
+            if (!placeRecord(item?.from) || !placeRecord(item?.to) || !Number.isFinite(item.at)) return;
+            const when = istParts(item.at);
+            if (when.weekend !== here.weekend) return;
+            const key = tripKey(item.from, item.to);
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push({ ...item, when });
+        });
+        let best = null;
+        groups.forEach((items, key) => {
+            // The busiest one-hour window of this trip (a morning habit is not moved by one evening trip).
+            let near = [];
+            items.forEach(centre => {
+                const around = items.filter(item => Math.abs(item.when.minute - centre.when.minute) <= 60);
+                if (new Set(around.map(item => item.when.day)).size > new Set(near.map(item => item.when.day)).size) near = around;
+            });
+            const minutes = near.map(item => item.when.minute).sort((a, b) => a - b);
+            const middle = minutes.length % 2 ? minutes[(minutes.length - 1) / 2]
+                : Math.round((minutes[minutes.length / 2 - 1] + minutes[minutes.length / 2]) / 2);
+            near = near.sort((a, b) => a.at - b.at);
+            const days = new Set(near.map(item => item.when.day));
+            if (days.size < 3) return;
+            if (here.minute < middle - 60 || here.minute > middle + 20) return;
+            const lines = {};
+            near.filter(item => item.line).forEach(item => { lines[item.line] = (lines[item.line] || 0) + (item.started ? 2 : 1); });
+            const line = Object.keys(lines).sort((a, b) => lines[b] - lines[a])[0] || "";
+            const board = near.filter(item => item.line === line && item.board).slice(-1)[0]?.board || null;
+            const latest = near[near.length - 1];
+            const candidate = { key, from: latest.from, to: latest.to, usualMinute: middle, days: days.size, line, board };
+            if (!best || candidate.days > best.days) best = candidate;
+        });
+        return best;
+    }
+
+    function placeLabel(place) {
+        const saved = savedPlaces().find(item => Math.abs(item.lat - place.lat) < 3e-4 && Math.abs(item.lon - place.lon) < 3e-4);
+        return saved ? `${placeIcon(saved.label)} ${tr(saved.label)}` : place.name;
+    }
+
+    async function renderUsualCard() {
+        const box = typeof document !== "undefined" ? $("usualCard") : null;
+        if (!box) return;
+        const usual = state.journey.active || state.lastPlan ? null : usualTrip(tripHistory());
+        const today = istParts(Date.now()).day;
+        if (!usual || store.get("bt.usual.dismissed", "") === `${today}|${usual.key}`) {
+            box.hidden = true; box.innerHTML = ""; state.usualShown = ""; return;
+        }
+        const hh = String(Math.floor(usual.usualMinute / 60)).padStart(2, "0"), mm = String(usual.usualMinute % 60).padStart(2, "0");
+        const head = `<div class="usual-head"><span class="usual-tag">🔁 ${escapeHtml(tr("Your usual trip"))}</span>` +
+            `<button type="button" class="usual-go">${escapeHtml(tr("Plan this trip"))}</button>` +
+            `<button type="button" class="usual-close" aria-label="${escapeHtml(tr("Not today"))}">✕</button></div>` +
+            `<div class="usual-route">${escapeHtml(placeLabel(usual.from))} → ${escapeHtml(placeLabel(usual.to))}</div>` +
+            `<div class="usual-meta">${escapeHtml(tr("You usually go around {time}.", { time: `${hh}:${mm}` }))}</div>`;
+        const liveId = `usual-live-${usual.key.length}-${usual.usualMinute}`;
+        box.innerHTML = head + `<div class="usual-live" id="${liveId}">${usual.line ? escapeHtml(tr("Checking BMTC for your usual {line}…", { line: usual.line })) : ""}</div>`;
+        box.hidden = false;
+        box.querySelector(".usual-close")?.addEventListener("click", () => { store.set("bt.usual.dismissed", `${today}|${usual.key}`); box.hidden = true; });
+        box.querySelector(".usual-go")?.addEventListener("click", () => {
+            box.hidden = true;
+            if (setEndpoint("origin", usual.from) && setEndpoint("destination", usual.to)) planJourney();
+        });
+        if (state.usualShown === usual.key && state.usualLiveText) { $(liveId).textContent = state.usualLiveText; return; }
+        state.usualShown = usual.key;
+        state.usualLiveText = "";
+        const text = await usualLiveText(usual);
+        state.usualLiveText = text;
+        const target = $(liveId);
+        if (target) target.textContent = text;
+    }
+
+    // The next live bus for the usual line, only from BMTC's own data; otherwise it says so.
+    async function usualLiveText(usual) {
+        if (!usual.line || !usual.board || !Number.isFinite(Number(usual.board.lat))) return "";
+        try {
+            const query = new URLSearchParams({ q: usual.line, stop_lat: String(usual.board.lat), stop_lon: String(usual.board.lon) });
+            const response = await fetch(`/api/bmtc/route?${query}`, { cache: "no-store" });
+            const data = await response.json();
+            if (!response.ok || !data.available) return tr("Live position for {line} is not available right now.", { line: usual.line });
+            const coming = (data.vehicles || []).filter(bus => bus.relevance === "approaching")
+                .map(bus => boardEtaMinutes(bus)).filter(minutes => minutes !== null).sort((a, b) => a - b);
+            return coming.length
+                ? tr("Next {line} at {stop}: about {min} min (BMTC live).", { line: usual.line, stop: usual.board.name || tr("your stop"), min: coming[0] })
+                : tr("BMTC shows no {line} heading to {stop} right now.", { line: usual.line, stop: usual.board.name || tr("your stop") });
+        } catch { return tr("Live position for {line} is not available right now.", { line: usual.line }); }
+    }
+
+    function setupTalkSnapUsual() {
+        setupSnap();
+        const talk = $("talkBtn");
+        if (talk) setupVoice(talk, $("aiInput"), { fromMainBar: true });
+        setTalkMode(store.get("bt.talk", false) === true, { announce: false });
+        try { speech()?.getVoices?.(); speech()?.addEventListener?.("voiceschanged", () => {}); } catch { /* voices load later */ }
+        renderUsualCard();
+        setInterval(() => renderUsualCard(), 60000);
+    }
+
+
+    // ---- Smooth live buses ----
+    // Pure: the points to glide through when a bus moves from one REPORTED position to the next.
+    // Along its known road path when both positions lie on it (and the bus moved forward on it);
+    // otherwise a straight line; a jump over MAX_GLIDE_METERS is not animated at all (the bus is
+    // simply shown at its new position). Nothing is ever extrapolated beyond the last report.
+    const MAX_GLIDE_METERS = 1500;
+    function glidePath(from, to, roadPath) {
+        if (!from || !to) return null;
+        const distance = haversineMeters(from, to);
+        if (!Number.isFinite(distance) || distance < 3 || distance > MAX_GLIDE_METERS) return null;
+        const path = Array.isArray(roadPath) ? roadPath.filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])) : [];
+        if (path.length >= 2) {
+            const nearest = (point) => {
+                let best = { index: -1, meters: Infinity };
+                path.forEach((p, index) => { const m = haversineMeters(point, p); if (m < best.meters) best = { index, meters: m }; });
+                return best;
+            };
+            const a = nearest(from), b = nearest(to);
+            if (a.meters <= 60 && b.meters <= 60 && b.index > a.index) {
+                return [from, ...path.slice(a.index + 1, b.index + 1), to];
+            }
+        }
+        return [from, to];
+    }
+
+    // Point a fraction t (0..1) of the way along a list of points, by distance.
+    function pointAlong(points, t) {
+        if (!points?.length) return null;
+        if (points.length === 1 || t <= 0) return points[0];
+        const lengths = points.slice(1).map((p, i) => haversineMeters(points[i], p));
+        const total = lengths.reduce((a, b) => a + b, 0);
+        if (!(total > 0) || t >= 1) return points[points.length - 1];
+        let left = total * t;
+        for (let i = 0; i < lengths.length; i++) {
+            if (left <= lengths[i]) {
+                const f = lengths[i] ? left / lengths[i] : 0;
+                return [points[i][0] + (points[i + 1][0] - points[i][0]) * f, points[i][1] + (points[i + 1][1] - points[i][1]) * f];
+            }
+            left -= lengths[i];
+        }
+        return points[points.length - 1];
+    }
+
+    function glideMarker(marker, points, duration = 1600) {
+        if (!marker) return;
+        const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+        if (!points || points.length < 2 || reduce || typeof requestAnimationFrame !== "function") {
+            if (points?.length) marker.setLngLat(points[points.length - 1]);
+            return;
+        }
+        marker.__glide = (marker.__glide || 0) + 1;
+        const token = marker.__glide, started = performance.now();
+        const step = (now) => {
+            if (marker.__glide !== token) return;                 // a newer report took over
+            const t = Math.min(1, (now - started) / duration);
+            const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+            marker.setLngLat(pointAlong(points, eased));
+            if (t < 1) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+    }
+
+    // Pure: how old a reported position is, as a short badge, and how faded the marker should be.
+    function positionAge(reportedAt, now = Date.now()) {
+        if (!Number.isFinite(reportedAt)) return { badge: "", level: "unknown" };
+        const seconds = Math.max(0, Math.round((now - reportedAt) / 1000));
+        const badge = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h`;
+        const level = seconds <= 90 ? "fresh" : seconds <= 300 ? "aging" : seconds <= 900 ? "old" : "very-old";
+        return { badge, level };
+    }
+
+    function markReported(element, reportedAt) {
+        if (!element) return;
+        if (!element.dataset) element.dataset = {};
+        element.dataset.reportedAt = String(reportedAt);
+    }
+
+    function refreshMarkerAges() {
+        (state.liveBus.markers || []).forEach(entry => {
+            const element = entry.marker?.getElement?.();
+            if (!element) return;
+            const age = positionAge(Number(element.dataset?.reportedAt));
+            const badge = element.querySelector?.(".bus-age");
+            if (badge) { badge.textContent = age.badge; badge.hidden = !age.badge; }
+            ["aging", "old", "very-old"].forEach(name => element.classList?.toggle?.(`age-${name}`, age.level === name));
+        });
+    }
+
+
+    // ---- Bus vs auto vs cab ----
+    // Pure: the comparison row for one journey option. Bus fare from BMTC's fare tables (exact, or
+    // "about" when estimated from BMTC's own fares for that distance); auto and cab from the official
+    // tariffs with road time at Bengaluru's measured average traffic. Everything is labelled.
+    // ---- Wait or walk ----
+    // Pure: for one bus ride, is walking the same stretch about as quick? Walk = the bus's own road distance
+    // (or 1.3 x straight line when the bus loops) at 75 m a minute; bus = wait (BMTC live estimate when given,
+    // else the timetable) + ride. Only short stretches (walk up to 25 min) are considered.
+    function waitOrWalk(leg, { now = null, liveAt = null } = {}) {
+        if (!leg?.transit || leg.role === "metro") return null;
+        const from = leg.from || {}, to = leg.to || {};
+        const straight = [from.lat, from.lon, to.lat, to.lon].every(v => Number.isFinite(Number(v)))
+            ? haversineMeters([Number(from.lon), Number(from.lat)], [Number(to.lon), Number(to.lat)]) : NaN;
+        const road = Number(leg.distance_m);
+        let meters = Number.isFinite(road) && road > 0 ? road : straight * 1.3;
+        if (Number.isFinite(straight) && Number.isFinite(road) && road > straight * 1.8) meters = straight * 1.3;
+        if (!Number.isFinite(meters) || meters <= 0) return null;
+        const walk = Math.ceil(meters / 75);
+        if (walk > 25) return null;
+        const ride = Number(leg.duration_minutes);
+        if (!Number.isFinite(ride)) return null;
+        let wait = Number(leg.wait_before_minutes) || 0, source = "timetable";
+        const planned = Date.parse(leg.departure_iso || "");
+        if (Number.isFinite(liveAt) && Number.isFinite(now)) { wait = Math.max(0, Math.round((liveAt - now) / 60000)); source = "live"; }
+        else if (Number.isFinite(now) && Number.isFinite(planned) && planned - now <= 45 * 60000 && planned - now >= -10 * 60000) {
+            wait = Math.max(0, Math.round((planned - now) / 60000));     // standing at the stop now: the real wait
+        }
+        const bus = wait + ride;
+        const verdict = walk <= bus - 2 ? "walk" : Math.abs(walk - bus) < 2 ? "either" : null;
+        if (!verdict) return null;
+        return { verdict, walk, bus, wait, ride, source, km: (meters / 1000).toFixed(1), line: leg.route_name || tr("the bus"),
+                 fare: leg.fare?.amount ?? null, fareExact: !!leg.fare?.exact, to: to.name || "" };
+    }
+
+    function waitOrWalkText(advice) {
+        if (!advice) return "";
+        const saves = advice.fare != null ? tr(", and saves {fare}", { fare: `${advice.fareExact ? "" : "~"}₹${advice.fare}` }) : "";
+        const vars = { walk: advice.walk, km: advice.km, bus: advice.bus, line: advice.line, to: advice.to, saves,
+                       source: advice.source === "live" ? tr("BMTC live estimate") : tr("timetable") };
+        return advice.verdict === "walk"
+            ? tr("🚶 Walking to {to} may be quicker: about {walk} min on foot ({km} km) against about {bus} min waiting for and riding the {line} ({source}){saves}.", vars)
+            : tr("🚶 Walking to {to} takes about as long: about {walk} min on foot ({km} km) against about {bus} min waiting for and riding the {line} ({source}){saves}.", vars);
+    }
+
+    function walkHintsHtml(route) {
+        const hints = (route?.legs || []).map(leg => waitOrWalk(leg)).filter(Boolean).map(waitOrWalkText);
+        return hints.length ? `<div class="walk-hints">${hints.map(text => `<p>${escapeHtml(text)}</p>`).join("")}</div>` : "";
+    }
+
+    function checkWaitOrWalk() {
+        const journey = state.journey;
+        const box = $("guideWalk");
+        if (!journey.active || !box) return;
+        const step = guideSteps(journey.route)[journey.stepIndex];
+        const leg = step && (step.kind === "board" || (step.kind === "walk" && step.leg?.role !== "egress_walk"))
+            ? (step.kind === "board" ? step.leg : (journey.route.legs || []).slice(step.legIndex + 1).find(item => item?.transit)) : null;
+        let liveAt = null;
+        const live = state.liveBus || {};
+        if (leg && String(live.boardingStop?.name || "").toLowerCase() === String(leg.from?.name || "").toLowerCase()) {
+            const lines = new Set([leg.route_name, ...(leg.also_served_by || [])].map(name => String(name || "").split(" ")[0].toUpperCase()));
+            const soonest = (live.lastShown || []).filter(bus => bus?.relevance === "approaching" && lines.has(String(bus.route || "").split(" ")[0].toUpperCase())
+                && boardEtaMinutes(bus) !== null).map(bus => parseBmtcTime(bus.board_eta)?.getTime()).filter(Number.isFinite).sort((a, b) => a - b)[0];
+            if (Number.isFinite(soonest)) liveAt = soonest;
+        }
+        const text = leg ? waitOrWalkText(waitOrWalk(leg, { now: Date.now(), liveAt })) : "";
+        box.hidden = !text;
+        if (box.textContent !== text) box.textContent = text;
+    }
+
+    // ---- Rain-aware trips ----
+    // Pure: what to say when rain is forecast during the trip, and which option keeps you dry longest.
+    function rainAdvice(routes, rain) {
+        if (!rain?.wet) return null;
+        const options = (routes || []).map((route, index) => ({ route, index, walk: Number(route?.walking_minutes) }))
+            .filter(item => item.route?.transit !== false && Number.isFinite(item.walk));
+        const least = options.sort((a, b) => a.walk - b.walk || a.index - b.index)[0] || null;
+        const text = tr("🌧 Rain likely around {hour} ({p}%, up to {mm} mm/h · Open-Meteo forecast).",
+            { mm: rain.max_mm, hour: rain.wettest_hour, p: rain.max_probability });
+        const tip = least ? tr("☂ Least walking: option {n} ({min} min on foot).", { n: least.index + 1, min: least.walk }) : "";
+        return { text, tip, leastIndex: least ? least.index : null, leastWalk: least ? least.walk : null };
+    }
+
+    async function checkRainForTrip(routes, revision) {
+        const starts = routes.map(route => Date.parse(route.departure_iso || "")).filter(Number.isFinite);
+        const ends = routes.map(route => Date.parse(route.arrival_iso || "")).filter(Number.isFinite);
+        const from = state.origin, to = state.destination;
+        if (!starts.length || !ends.length || !from || !to) return;
+        const start = Math.min(...starts), end = Math.min(Math.max(...ends), start + 6 * 3600000);
+        const lat = (Number(from.lat) + Number(to.lat)) / 2, lon = (Number(from.lon) + Number(to.lon)) / 2;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        const iso = ms => new Date(ms).toISOString().replace("Z", "+00:00");
+        let rain = null;
+        try {
+            const result = await fetchJson(`/api/weather?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}&from=${encodeURIComponent(iso(start))}&to=${encodeURIComponent(iso(end))}`, {}, 8000);
+            rain = result.ok ? result.data?.rain : null;
+        } catch { return; }                         // no forecast: say nothing about rain
+        if (revision !== state.journeyRevision) return;
+        const advice = rainAdvice(routes, rain);
+        state.rain = advice;
+        if (!advice) return;
+        const note = $("rainNote");
+        if (!note) return;
+        note.innerHTML = `<span class="rain-text">${escapeHtml(advice.text)}</span>${advice.tip ? ` <span class="rain-tip">${escapeHtml(advice.tip)}</span>` : ""}` +
+            // The first option already walks least: nothing to switch to.
+            (advice.leastIndex ? `<span class="rain-actions"><button type="button" class="rain-show">☂ ${escapeHtml(tr("Show that option"))}</button>` +
+                (state.selectedPreference !== "less_walking" ? `<button type="button" class="rain-replan">🚶 ${escapeHtml(tr("Re-plan with less walking"))}</button>` : "") + `</span>` : "");
+        note.hidden = false;
+        note.title = `${advice.text} ${advice.tip}`.trim();
+        note.querySelector(".rain-show")?.addEventListener("click", () => {
+            const target = routeResults.querySelector(`.journey-route-card[data-route-index="${advice.leastIndex}"]`);
+            if (target) { target.click(); target.scrollIntoView?.({ behavior: "smooth", block: "nearest", inline: "nearest" }); }
+        });
+        note.querySelector(".rain-replan")?.addEventListener("click", () => {
+            state.selectedPreference = "less_walking";
+            syncPreferenceChips();
+            planJourney();
+        });
+        const least = advice.leastIndex ? routeResults.querySelector(`.journey-route-card[data-route-index="${advice.leastIndex}"] .route-subline`) : null;
+        if (least && !least.querySelector(".rain-tag")) least.insertAdjacentHTML("beforeend", `<span class="rain-tag">☂ ${escapeHtml(tr("least walking"))}</span>`);
+    }
+
+    // ---- Honest arrival window ----
+    // A range for when the journey really arrives, from BMTC's own measurements (server: transit/window.py),
+    // optionally moved by BMTC's live estimate for the first bus. With no measurements, only the timetable
+    // time is shown. Every line of "why" names where its numbers come from.
+    function delayWords(minutes) {
+        const n = Math.round(Number(minutes));
+        if (!Number.isFinite(n)) return "";
+        if (Math.abs(n) <= 1) return tr("on time");
+        return n > 0 ? tr("{n} min late", { n }) : tr("{n} min early", { n: -n });
+    }
+
+    function clockAfter(iso, minutes = 0) {
+        const time = new Date(iso).getTime();
+        if (!Number.isFinite(time)) return "";
+        return new Date(time + minutes * 60000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+    }
+
+    function arrivalWindow(route, live = null) {
+        const w = route?.arrival_window;
+        if (!w || !w.scheduled_iso) return null;
+        const period = w.period === "weekends" ? tr("weekends") : tr("weekdays");
+        const why = [];
+        const shift = live && Number.isFinite(Number(live.shift)) && Math.abs(Number(live.shift)) <= 90 ? Math.round(Number(live.shift)) : null;
+        if (shift !== null) {
+            why.push(tr("BMTC estimates your {line} at {stop} at {time} ({how} against the timetable). The rest of the trip is taken at its timetabled length.",
+                { line: live.line, stop: live.stop, time: live.time, how: delayWords(shift) }));
+        }
+        if (w.basis === "stop" || w.basis === "route") {
+            why.push(tr(w.basis === "stop"
+                ? "{line} at {stop}: usually between {a} and {b} around this time on {period} ({n} BMTC measurements over {d} days)."
+                : "{line}: usually between {a} and {b} along the route around this time on {period} ({n} BMTC measurements over {d} days). Delays differ by stop.",
+                { line: w.line, stop: w.stop, a: delayWords(w.low), b: delayWords(w.high), period, n: w.samples, d: w.days }));
+        } else if (w.basis === "city") {
+            why.push(tr("No measurements for {line} at this hour yet. Across all measured BMTC buses at this hour, arrivals ran between {a} and {b} ({n} measurements over {d} days).",
+                { line: w.line, a: delayWords(w.low), b: delayWords(w.high), n: w.samples, d: w.days }));
+        } else if (w.basis === "metro") {
+            why.push(tr("The last part is by metro; arrival is from the metro timetable."));
+        } else {
+            why.push(tr("Timetable arrival {time}. No measured delays for this hour yet, so no range is shown.", { time: w.scheduled }));
+        }
+        (w.missed || []).forEach(miss => {
+            why.push(miss.next
+                ? tr("If you miss the {line} at {stop}, the next one is timetabled at {time} (about {n} min later).", { line: miss.line, stop: miss.stop, time: miss.next, n: miss.later_minutes })
+                : tr("If you miss the {line} at {stop}, the timetable has no later one within 3 hours.", { line: miss.line, stop: miss.stop }));
+        });
+        let from, to, ranged = false;
+        if (shift !== null) {
+            from = to = clockAfter(w.scheduled_iso, shift);
+        } else if (w.earliest_iso && w.latest_iso) {
+            from = clockAfter(w.earliest_iso);
+            to = clockAfter(w.latest_iso);
+            ranged = true;
+        } else {
+            from = to = w.scheduled;
+        }
+        const label = shift !== null ? tr("Likely around {time} (BMTC live estimate)", { time: from })
+            : ranged ? (from === to ? tr("Likely around {time}", { time: from }) : tr("Likely {from}–{to}", { from, to }))
+            : tr("Timetable {time} · no measured range yet", { time: from });
+        return { from, to, ranged, live: shift !== null, label, why, basis: w.basis };
+    }
+
+    function arrivalWindowHtml(route, live = null) {
+        const win = arrivalWindow(route, live);
+        // Nothing measured, nothing live, no risky change: the card's own "Arrive" time already says it all.
+        if (!win || (!win.ranged && !win.live && !(route.arrival_window.missed || []).length)) return "";
+        return `<details class="arrival-window ${win.ranged || win.live ? "ranged" : "plain"}"><summary>🕒 ${escapeHtml(win.label)} <span class="aw-why">${escapeHtml(tr("why?"))}</span></summary>` +
+            `<ul>${win.why.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul></details>`;
+    }
+
+    // BMTC's live estimate for the journey's first bus at its boarding stop, as a shift from the timetable.
+    function liveArrivalShift(route, buses) {
+        const first = (route?.legs || []).find(leg => leg?.transit);
+        if (!first?.departure_iso) return null;
+        const planned = new Date(first.departure_iso).getTime();
+        const line = String(first.route_name || "").split(" ")[0].toUpperCase();
+        const candidates = (buses || []).filter(bus => bus?.relevance === "approaching" && bus.group !== "alternate" &&
+            String(bus.route || "").split(" ")[0].toUpperCase() === line && boardEtaMinutes(bus) !== null)
+            .map(bus => ({ bus, at: parseBmtcTime(bus.board_eta)?.getTime() }))
+            .filter(item => Number.isFinite(item.at) && Math.abs(item.at - planned) <= 90 * 60000)
+            .sort((a, b) => Math.abs(a.at - planned) - Math.abs(b.at - planned));
+        if (!candidates.length || !Number.isFinite(planned)) return null;
+        const best = candidates[0];
+        return { shift: Math.round((best.at - planned) / 60000), line: first.route_name, stop: first.from?.name || tr("your stop"),
+                 time: new Date(best.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) };
+    }
+
+    function compareHtml(route, compare) {
+        if (!compare || route?.transit === false) return "";
+        const fare = route?.bus_fare;
+        const minutes = Number(route?.total_elapsed_minutes ?? route?.duration_minutes);
+        const busFare = fare?.total == null ? tr("fare not in BMTC data") : `${fare.exact ? "" : "~"}₹${fare.total}`;
+        const busTime = Number.isFinite(minutes) ? tr("{min} min", { min: minutes }) : "";
+        const cell = (icon, name, price, time, extra = "") =>
+            `<div class="cmp-cell"><span class="cmp-name">${icon} ${escapeHtml(name)}</span><b>${escapeHtml(price)}</b><small>${escapeHtml(time)}${extra}</small></div>`;
+        const night = compare.auto?.night ? ` · ${escapeHtml(tr("night rate"))}` : "";
+        const saving = fare?.total != null && Number.isFinite(compare.auto?.fare) ? compare.auto.fare - fare.total : null;
+        return `<details class="compare-row"><summary>` +
+            cell("🚌", tr("Bus"), busFare, busTime) +
+            cell("🛺", tr("Auto"), `~₹${compare.auto.fare}`, `~${tr("{min} min", { min: compare.auto.minutes })}`, night) +
+            cell("🚕", tr("Cab"), `~₹${compare.cab.fare}`, `~${tr("{min} min", { min: compare.cab.minutes })}`) +
+            `</summary><div class="cmp-notes">` +
+            (saving > 0 ? `<p class="cmp-saving">${escapeHtml(tr("The bus saves about ₹{amount} compared with an auto.", { amount: saving }))}</p>` : "") +
+            `<p>${escapeHtml(tr("Road distance {km} km ({kind}). Auto and cab times assume Bengaluru's average traffic (TomTom 2025), not live traffic; bus time is from the timetable.", { km: compare.road_km, kind: compare.road_distance === "road" ? tr("driving route") : tr("estimated") }))}</p>` +
+            (fare && !fare.exact && fare.total != null ? `<p>${escapeHtml(tr("~ Bus fare estimated from BMTC's own ordinary fares for the same distance."))}</p>` : "") +
+            `<ul>${(compare.sources || []).map(source => `<li>${escapeHtml(source)}</li>`).join("")}</ul></div></details>`;
+    }
+
+    // ---- Nearby stops now ----
+    async function showNearbyStops() {
+        const panel = $("nearbyPanel");
+        if (!panel) return;
+        panel.hidden = false;
+        panel.innerHTML = `<div class="nearby-head"><b>📍 ${escapeHtml(tr("Stops near you"))}</b><button type="button" class="nearby-close" aria-label="${escapeHtml(tr("Close"))}">✕</button></div><p class="nearby-note">${escapeHtml(tr("Finding where you are…"))}</p>`;
+        panel.querySelector(".nearby-close")?.addEventListener("click", closeNearby);
+        const here = await currentPlace();
+        if (!here) {
+            panel.querySelector(".nearby-note").textContent = tr("Location is not available. Allow location for this site, or choose a stop with Pick on map.");
+            return;
+        }
+        let data;
+        try {
+            const result = await fetchJson(`/api/nearby?lat=${here.lat}&lon=${here.lon}&radius=600`, { cache: "no-store" }, 12000);
+            if (!result.ok) throw new Error(result.data?.error || "Nearby stops are not available.");
+            data = result.data;
+        } catch (error) {
+            panel.querySelector(".nearby-note").textContent = explainFailure(error, tr("Nearby stops"));
+            return;
+        }
+        renderNearby(panel, data, here);
+    }
+
+    function renderNearby(panel, data, here) {
+        const stops = data?.stops || [];
+        const items = stops.map((stop, index) => {
+            const lines = (stop.lines || []).map(line =>
+                `<li><span class="nb-route">${escapeHtml(line.route)}</span><span class="nb-to">→ ${escapeHtml(line.headsign || "")}</span>` +
+                `<span class="nb-times">${line.times.map((time, i) => `${escapeHtml(time)}${i === 0 ? ` <small>(${escapeHtml(tr("in {min} min", { min: line.minutes[0] }))})</small>` : ""}`).join(" · ")}</span></li>`).join("");
+            return `<li class="nb-stop" data-index="${index}"><div class="nb-title"><span class="nb-num">${index + 1}</span><b>${escapeHtml(stop.name)}</b>` +
+                `<small>${escapeHtml(tr("{m} m · {min} min walk", { m: stop.meters, min: stop.walk_minutes }))}</small></div>` +
+                (stop.towards?.length ? `<div class="nb-towards">${escapeHtml(tr("Towards"))} ${escapeHtml(stop.towards.join(", "))}</div>` : "") +
+                (lines ? `<ul class="nb-lines">${lines}</ul>` : `<p class="nb-none">${escapeHtml(tr("No buses timetabled here in the next hour."))}</p>`) +
+                `<div class="nb-actions">${stop.lines?.length ? `<button type="button" data-live="${index}">🚌 ${escapeHtml(tr("Live buses here"))}</button>` : ""}` +
+                `<button type="button" data-start="${index}">${escapeHtml(tr("Start from this stop"))}</button></div></li>`;
+        }).join("");
+        panel.innerHTML = `<div class="nearby-head"><b>📍 ${escapeHtml(tr("Stops near you"))}</b><button type="button" class="nearby-close" aria-label="${escapeHtml(tr("Close"))}">✕</button></div>` +
+            `<p class="nearby-note">${escapeHtml(tr("Next hour, from the BMTC timetable (not live). Tap Live buses for BMTC's live positions."))}</p>` +
+            (items ? `<ol class="nb-list">${items}</ol>` : `<p class="nearby-note">${escapeHtml(tr("No BMTC stop within 600 m."))}</p>`);
+        panel.querySelector(".nearby-close")?.addEventListener("click", closeNearby);
+        panel.querySelectorAll("[data-live]").forEach(button => button.addEventListener("click", () => {
+            const stop = stops[Number(button.dataset.live)];
+            const lines = [...new Set(stop.lines.map(line => line.route))].slice(0, 6);
+            closeNearby({ keepMarkers: false });
+            trackSearchBuses(lines, [], false, { id: stop.id, name: stop.name, lat: stop.lat, lon: stop.lon }, null, []);
+        }));
+        panel.querySelectorAll("[data-start]").forEach(button => button.addEventListener("click", () => {
+            const stop = stops[Number(button.dataset.start)];
+            closeNearby();
+            setEndpoint("origin", { id: stop.id, name: stop.name, lat: stop.lat, lon: stop.lon });
+            if (state.destination) planJourney(); else destinationInput?.focus?.();
+        }));
+        // Numbered stop markers, and the map framed on you and them.
+        clearNearbyMarkers();
+        if (typeof maplibregl !== "undefined" && state.map) {
+            state.nearbyMarkers = stops.map((stop, index) => {
+                const element = document.createElement("div");
+                element.className = "nearby-marker";
+                element.textContent = String(index + 1);
+                element.title = stop.name;
+                return new maplibregl.Marker({ element, anchor: "center" }).setLngLat([stop.lon, stop.lat]).addTo(state.map);
+            });
+            try {
+                const bounds = new maplibregl.LngLatBounds([here.lon, here.lat], [here.lon, here.lat]);
+                stops.forEach(stop => bounds.extend([stop.lon, stop.lat]));
+                state.map.fitBounds(bounds, { padding: 80, maxZoom: 17, duration: 700 });
+            } catch { /* framing is cosmetic */ }
+        }
+    }
+
+    function clearNearbyMarkers() {
+        (state.nearbyMarkers || []).forEach(marker => marker.remove?.());
+        state.nearbyMarkers = [];
+    }
+
+    function closeNearby() {
+        const panel = $("nearbyPanel");
+        if (panel) { panel.hidden = true; panel.innerHTML = ""; }
+        clearNearbyMarkers();
+    }
+
     // ---- Installable app ----
     function setupInstallableApp() {
         if (typeof window === "undefined" || typeof navigator === "undefined") return;
@@ -4305,19 +6423,21 @@
 
     function setupWhatsNew() {
         const box = $("whatsNew");
-        if (!box || store.get("bt.seen.features-1", false)) return;
+        if (!box || store.get("bt.seen.features-2", false)) return;
         box.innerHTML = `<strong>${escapeHtml(tr("New"))}</strong> ` +
-            `<span>${escapeHtml(tr("☆ Save Home/Work · 🔔 Remind me and ↗ Share on every journey · stop alerts after ▶ Start journey · ☰ menu: ಕನ್ನಡ, install app"))}</span>` +
+            `<span>${escapeHtml(tr("📷 Snap & go: photo a bus, stop board or address · ☰ → Talk mode: spoken answers and guidance · 🔁 your usual trip appears at its usual time · ☆ Save Home/Work · 🔔 Remind & ↗ Share on every journey"))}</span>` +
             `<button type="button" aria-label="${escapeHtml(tr("Dismiss"))}">✕</button>`;
         box.hidden = false;
-        box.querySelector("button")?.addEventListener("click", () => { box.hidden = true; store.set("bt.seen.features-1", true); });
+        box.querySelector("button")?.addEventListener("click", () => { box.hidden = true; store.set("bt.seen.features-2", true); });
     }
 
     function setupEverydayFeatures() {
         state.lang = store.get("bt.lang", "en") === "kn" ? "kn" : "en";
+        setupPageTranslation();
         state.journey.alertsOn = store.get("bt.alerts", true) !== false;
         setupPlaces();
         setupWhatsNew();
+        setupTalkSnapUsual();
         setupInstallableApp();
         restoreReminder();
         $("guideAlertToggle")?.addEventListener("click", () => {
@@ -4341,6 +6461,7 @@
         if (state.lang === "kn") applyLanguage("kn");
         // Missed-bus check while guiding (every 30 s; cheap, no network of its own).
         setInterval(() => { if (state.journey.active) checkMissedBus(); }, 30000);
+        setInterval(() => refreshMarkerAges(), 10000);
     }
 
 
@@ -4370,7 +6491,7 @@
     }
 
     // Read-only inspection hook for manual checks: open the page with ?debug
-    try { if (new URLSearchParams(location.search).has("debug")) window.__transit = { state }; } catch (error) { /* not in a browser */ }
+    try { if (new URLSearchParams(location.search).has("debug")) window.__transit = { state, showGuideBanner, navSummary, navTrip, startPreview, stopPreview, rideStops }; } catch (error) { /* not in a browser */ }
 
     init();
 })();

@@ -255,13 +255,24 @@ def _generate(body: dict, config: dict, transport, timeout: float):
             left = deadline - time.monotonic()
             if left < 2:
                 return last_status, last_data, last_model, last_error
+            started_call = time.monotonic()
             try:
                 status_code, data = requester(url, body, config["key"], min(timeout, left))
                 last_status, last_data, last_model, last_error = status_code, data, model, None
+                if transport is None:
+                    from . import health
+                    health.record("gemini", status_code == 200, time.monotonic() - started_call,
+                                  "" if status_code == 200 else f"HTTP {status_code} from {model}")
             except ConnectFailed as error:
+                if transport is None:
+                    from . import health
+                    health.record("gemini", False, None, f"connection failed: {error}")
                 return 504, {}, model, error          # same host for every model: retrying cannot help
             except (TimeoutError, OSError, URLError) as error:
                 last_status, last_data, last_model, last_error = 504, {}, model, error
+                if transport is None:
+                    from . import health
+                    health.record("gemini", False, None, f"{type(error).__name__}: {error}")
             except ValueError as error:
                 return 200, {}, model, error
             if last_status not in TRANSIENT_STATUSES:
@@ -568,3 +579,87 @@ def explain(routes, *, preference=None, transport=None, timeout: float | None = 
         _log("explain: answer mentioned a time, number or bus not in the results; discarded", config["key"])
         raise GeminiUnavailable("ungrounded")
     return text
+
+
+# ---------------------------------------------------------------- Snap & go: reading a photo
+PHOTO_PROMPT = """You read photos for a free Bengaluru (BMTC) bus journey planner. Report ONLY text that is
+actually visible in the photo; never guess. Call read_photo exactly once.
+
+kind:
+- "bus": a bus (front, side or back) showing a route number such as 500-D, KBS-1K, V-335E, 335E, G-4.
+- "stop": a bus stop sign, shelter or stop name board (the traveller is standing there).
+- "place": a written address, landmark, shop, office or area name (printed or handwritten) the traveller
+  wants to go to.
+- "unreadable": nothing usable can be read.
+
+route_number: only for a bus, exactly as shown (keep letters, digits and dashes); empty if not readable.
+destination: for a bus, the destination shown on its board, if readable.
+place_name: for a stop or place, the name in English letters as Bengaluru people commonly write it (for
+Kannada text give the usual English spelling, e.g. ಮೆಜೆಸ್ಟಿಕ್ -> Majestic). For an address, the most useful
+part for finding it (area, landmark or building name), not the house number.
+text_seen: the main text you can read, as written (may be Kannada), at most 120 characters.
+If a number or name is partly hidden or blurred, leave it empty rather than guess."""
+
+PHOTO_TOOLS = [{"functionDeclarations": [{
+    "name": "read_photo",
+    "description": "What the photo shows, using only visible text.",
+    "parameters": {"type": "object", "properties": {
+        "kind": {"type": "string", "enum": ["bus", "stop", "place", "unreadable"]},
+        "route_number": {"type": "string", "description": "Bus route number exactly as visible, or empty."},
+        "destination": {"type": "string", "description": "Destination on the bus board, or empty."},
+        "place_name": {"type": "string", "description": "Stop or place name in English letters, or empty."},
+        "text_seen": {"type": "string", "description": "Main visible text, as written."}},
+        "required": ["kind", "text_seen"]}}]}]
+PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp")
+MAX_PHOTO_BYTES = 4 * 1024 * 1024
+
+
+def parse_photo(data: dict) -> dict:
+    """Validated reading of a photo: {"kind", "route", "destination", "place", "seen"}."""
+    if (data.get("promptFeedback") or {}).get("blockReason"):
+        raise GeminiUnavailable("blocked")
+    candidate = ((data or {}).get("candidates") or [{}])[0]
+    call = next((part.get("functionCall") for part in (candidate.get("content") or {}).get("parts") or []
+                 if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)), None)
+    if not call or call.get("name") != "read_photo" or not isinstance(call.get("args"), dict):
+        raise GeminiUnavailable("bad_response")
+    args = call["args"]
+    kind = args.get("kind") if args.get("kind") in ("bus", "stop", "place", "unreadable") else "unreadable"
+    route = clean_route(args.get("route_number"))
+    route = route if route and re.fullmatch(r"[A-Z0-9][A-Z0-9 .-]{0,29}", route) and re.search(r"\d", route) else None
+    reading = {"kind": kind, "route": route, "destination": _clean_text(args.get("destination"), 80) or None,
+               "place": _clean_text(args.get("place_name"), 80) or None, "seen": _clean_text(args.get("text_seen"), 120)}
+    # A reading must carry what its kind needs; otherwise it is unreadable (never guessed).
+    if kind == "bus" and not reading["route"]:
+        reading["kind"] = "place" if reading["place"] else "unreadable"
+    if reading["kind"] in ("stop", "place") and not reading["place"]:
+        reading["kind"] = "unreadable"
+    return reading
+
+
+def read_photo(image: bytes, mime: str, *, transport=None, timeout: float | None = None) -> dict:
+    """Ask Gemini what a photo shows. Raises GeminiUnavailable. The photo is not stored anywhere."""
+    config = settings()
+    if not config["enabled"]:
+        raise GeminiUnavailable("no_key")
+    if mime not in PHOTO_TYPES or not image or len(image) > MAX_PHOTO_BYTES:
+        raise GeminiUnavailable("bad_request")
+    import base64
+    timeout = max(timeout or _timeout_setting(), 20.0)
+    body = {
+        "systemInstruction": {"parts": [{"text": PHOTO_PROMPT}]},
+        "contents": [{"role": "user", "parts": [
+            {"inlineData": {"mimeType": mime, "data": base64.b64encode(image).decode("ascii")}},
+            {"text": "What does this photo show? Use read_photo."}]}],
+        "generationConfig": {"thinkingConfig": {"thinkingLevel": "MINIMAL"}, "maxOutputTokens": 512},
+        "tools": PHOTO_TOOLS,
+        "toolConfig": {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": ["read_photo"]}},
+    }
+    status_code, data, used_model, request_error = _generate(body, config, transport, timeout)
+    if request_error is not None:
+        raise _request_failure(request_error, config, timeout) from None
+    if status_code != 200:
+        _log(f"photo: HTTP {status_code} from {used_model}: {_error_text(data) or 'no error message'}", config["key"])
+        raise GeminiUnavailable("rate_limited" if status_code == 429 else
+                                "bad_key" if status_code in (401, 403) else "bad_request")
+    return parse_photo(data)

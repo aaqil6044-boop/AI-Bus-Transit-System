@@ -104,6 +104,78 @@ Both panels have a slim pinned header with a one-line summary; click it (or ▾)
 - **Installable app**: the page can be installed from the browser (☰ → Install, or the browser's own menu). The app shell works on a poor connection; journeys, live buses and the assistant always need the server and are never served from a cache.
 - **Namma Metro**: the router asks for metro legs, and journey cards, steps and live tracking handle them (metro legs are never sent to BMTC's bus feed). Metro appears in journeys only after adding the official BMRCL timetable from the DULT Transit Data Hub: `python scripts/add_metro.py path\to\bmrcl_gtfs.zip`, then rebuild the route graph (`build-otp-graph.ps1`) and restart.
 
+## Snap & go, talk mode and your usual trip
+
+- **Snap & go** (📷 next to the microphone, also in the chat): photograph a bus, a stop board (English or Kannada) or a written address. The page shrinks the photo and sends it once to Gemini, which reports only the text it can see; the photo is not stored. A bus starts live tracking for that route (around your location when no start is set), a stop board becomes your start, an address becomes your destination (from your location when no start is set). Places are found in the BMTC stop list / OpenStreetMap and journeys come from the normal planner. Anything unreadable is said to be unreadable. Needs GEMINI_API_KEY.
+- **Talk mode** (☰ → Talk mode): a big 🎙 button to speak; answers, each journey step, stop alerts, "missed it?" and leave reminders are spoken in English or Kannada (Kannada needs a Kannada text-to-speech voice on the device; the app says so when there is none).
+- **Your usual trip**: the app remembers on this device which trips you plan and start. When the same trip has happened on 3 different days at about the same time (weekdays and weekends kept apart), a card appears from an hour before that time with one-tap planning and the next live bus of the line you usually take, only from BMTC's live data. ☰ → "Forget my trip history" clears it.
+
+## Faster, sturdier, nearby stops and costs (Nov 2026)
+
+- **Learned delays, cleaned**: BMTC sometimes pairs a bus with the wrong timetable trip, so a run looks "76 min late" or "30 min early" from its very first stop. Such runs are now left out of every summary (raw data kept). Because delay builds up along a route, the figure for your own boarding stop is used when there is enough data there (BMTC station ids are the timetable's stop ids); the whole-route figure says "depends on the stop". Journey confidence uses the delay where you get off.
+- **Smoother live buses**: a bus glides from its previous to its new REPORTED position (along its road when known; never beyond the last report; big jumps are not animated). Each marker shows how old its position is (20s, 4m) and fades as it ages.
+- **Faster**: page files and big answers are gzip-compressed (app.js 254 KB -> 65 KB; a journey answer 97 KB -> 5 KB); versioned files are cached by the browser; repeat stop searches (10 min) and the same journey asked again (45 s) answer from memory; the stop index, spelling list and route engine are warmed up at start (first search 2 s -> 0.03 s).
+- **Sturdier**: the page re-checks the server every 20 s while something is wrong and clears the notice when it recovers. On the public site notices are plain ("temporarily unavailable"); developer steps (run-local.cmd) appear only on your own computer. BMTC feed outages are announced.
+- **Admin status page**: `/status` shows each service (BMTC, Gemini, route engine, OpenStreetMap): working or not, typical time, last error, recent errors, learned-delay data size. Open on the server's own computer; elsewhere only with `?token=` matching `STATUS_TOKEN` (set it in /etc/bengaluru-transit.env on Azure). No keys or traveller data are shown.
+- **📍 Nearby stops**: one tap shows BMTC stops within 600 m, each with direction ("towards ...") and the next timetabled departures per line for the coming hour, numbered on the map; "Live buses here" starts BMTC live tracking for those lines at that stop; "Start from this stop" sets it as the start.
+- **Bus vs auto vs cab** on every journey: bus fare from BMTC's fare tables (exact for AC routes and listed zone pairs; otherwise "~" = BMTC's median ordinary fare for the same distance; AC without a rule: no fare), auto from the Bengaluru meter tariff (Rs 36 first 2 km, Rs 18/km, 1.5x 22:00-05:00), cab from the Karnataka uniform taxi fare (Rs 100 first 4 km, Rs 24/km, +5% GST, +10% 00:00-06:00), road distance from the route engine's driving route, road time at TomTom 2025's measured Bengaluru average (36 min per 10 km; 41 morning rush, 45 evening rush). All labelled as estimates. The fare tables are copied from data/bmtc_gtfs.zip into the stop database at start-up, so they reach Azure with the database upload.
+
+## Kannada, transfers, rain and honest arrival times (Nov 2026)
+
+- **ಕನ್ನಡ everywhere**: with ☰ → ಕನ್ನಡ, every notice, live-panel line, card and step is shown in Kannada (stop names stay as BMTC writes them; numbers and times are kept exactly). The From/To suggestions also show BMTC's own Kannada stop name (9,503 official names from the timetable feed, copied into the stop database at start-up).
+- **The built-in helper understands Kannada** (typed or spoken, kn-IN voice): "ಹೆಬ್ಬಾಳದಿಂದ ಮೆಜೆಸ್ಟಿಕ್‌ಗೆ", "ಇಲ್ಲಿಂದ ಜಯನಗರಕ್ಕೆ ಕಡಿಮೆ ನಡಿಗೆ", "ಸಂಜೆ 6 ಗಂಟೆಗೆ ಮನೆಗೆ", "೫೦೦-ಡಿ ಎಲ್ಲಿದೆ", "ವಿ-೫೦೦ಡಿ ತಡವಾಗಿ ಬರುತ್ತದೆಯೇ", "ವಾಪಸ್". Places are matched only against BMTC's own Kannada names (small spelling differences allowed); an unknown name is never guessed. A Kannada message always gets a Kannada answer.
+- **Phone**: while routes, journey steps or live buses cover the assistant box, 🎙 and 📷 sit in the top bar (🎙 opens the chat and listens there).
+- **Background delay collector**: the app asks BMTC about the 20 busiest bus numbers in turn, one route a minute, 6:00-22:00, so "usually N min late" fills in within days instead of weeks. It backs off for 10 minutes after any BMTC failure. `COLLECTOR=off` stops it; progress is on `/status`.
+- **Honest arrival window**: each journey shows "Likely 10:39-10:43" when BMTC's own scheduled-vs-actual times for the last bus exist around that hour (at your stop when there is enough data, else along the route; else the spread of all measured BMTC buses at that hour). No measurements: no range, just the timetable time. "why?" lists exactly what the range is based on, and, for a risky change, when the next bus on that line is timetabled. With live tracking, BMTC's own estimate for your first bus moves the estimate.
+- **Transfer guardian**: while you ride a bus with a change after it, the journey panel checks how late your bus is (GPS against the timetabled stop times, else its usual delay) against when the connecting bus will come (BMTC's live estimate for that stop, else its usual delay, else the timetable). "Looks fine / tight / you may miss it"; on a likely miss it warns once (spoken in talk mode) and offers "Find another way from <your get-off stop>" at the time you will get there. Without GPS or measurements it says nothing.
+- **Rain-aware trips**: the free Open-Meteo hourly forecast for the hours of your trip. When rain is likely, a note above the options says when and how much (named as a forecast) and points at the option with the least walking. `WEATHER=off` turns it off; forecasts are cached 30 min.
+- **Wait or walk**: for a short bus ride (walk up to 25 min), when walking the same stretch is quicker or about as quick as waiting for and riding the bus (BMTC's live estimate when tracking, else the timetable), the card and the journey step say so, with the fare it saves.
+
+## Journey mode (Nov 2026)
+
+Once a journey starts it becomes a navigation screen, in the style of Google Maps:
+- **Green instruction banner**: an icon (🚶 walk, 🚏 board, 🚌 ride, 🚇 metro, 🏁 arrive), what to do now, and one live line ("142 m to go", "Scheduled 18:00 · BMTC: 328-HK in about 6 min", "3 stops to go · get down at Hope Farm", worked out from GPS against the bus's stop list), with a "THEN …" preview of the next step.
+- **Arrival and progress**: "Arrive 10:42–10:51" (the honest window when measured, else the timetable time), minutes and kilometres left while the trip is under way, step dots, and chips for the change of bus and GPS trouble.
+- **Big buttons**: ◀, Next step ▶ (✓ Finish on the last step).
+- **Steps / Live buses / Trip info** tabs: a timeline of every step (tap one to jump to it), the buses BMTC reports heading to your next boarding stop (tap one to see it on the map), and the arrival range with its reasons, the change-of-bus check, wait-or-walk, rain and the fare.
+- Wide screens show all of this as a full-height sidebar on the left; phones show the banner at the top and a bottom sheet (tap "⌃ Steps" or the handle to open the tabs, "⌄ Map" to close).
+- **"☰ Full guide & live panel"** opens the earlier detailed step guide and live-bus panel; "🗺 Back to map" returns. "✕ End journey" needs a second tap.
+- **The map**: the trip is drawn on top: legs already done in grey, the current leg bold blue with a white edge, later legs lighter blue, walks dotted. Buttons on the right: (🎙 on phones), ＋, －, ◎ follow me, 📍 this step, ⤢ whole trip. Pinching, dragging or zooming yourself is respected: GPS updates move only your dot while you handle the map, and a zoom you chose is kept.
+
+## Navigation that moves by itself (Nov 2026)
+
+With a good GPS fix (accuracy 50 m or better, under 20 s old), the journey moves on without pressing anything:
+- **Walking** → when you are within ~25-40 m of the stop (or the destination), the next step starts.
+- **Waiting at the stop** → when the phone is moving along the bus's own road, 200 m+ past the stop and over 150 m from it (and not at walking pace when the phone reports speed), the ride step starts: "You are on the move with 328-HK. Watch for your stop."
+- **Riding** → at the get-off stop, the next step starts. The "Get ready: next stop" and "Get off here" alerts still come first.
+- **Arriving** → "You have arrived" with a Finish button. Finishing is always your own tap.
+- Every automatic move says what happened and has **Undo**. Going back by hand pauses automatic moves on that step for 90 s. Weak or old GPS never moves a step; Next step always works.
+- **Catch the bus** (walking to a stop): "✓ 328-HK in ~8 min, 4 min walk: you will make it", "⏱ keep going" or "🏃 hurry or take the next one", from BMTC's live estimate for that stop when there is one, else the timetable.
+- **Live buses at your stop** sit in the main card while you walk to and wait at the stop (route, minutes or stops away).
+- **Off route** (walking 80 m+ off the walking path with a good fix): a warning with "Re-route from here", which plans again from where you are.
+- The part of the trip already travelled turns grey on the map; the map follows you heading-up while you move.
+- **🔈/🔊** on the map buttons turns spoken directions on or off. The screen is kept on during navigation where the browser allows it.
+- **▶ Preview the trip**: on a computer without GPS (or to see what is coming), a simulated position travels the route at 15× speed, so the whole flow can be watched. A yellow PREVIEW bar is shown the whole time, notifications and lateness checks are off, and real GPS is ignored until the preview stops.
+
+## Start journey = start navigating (Nov 2026)
+
+Pressing Start journey now behaves like starting navigation in Google Maps:
+- The app asks for your location straight away and **flies to you**: zoomed in (17), tilted, and **turned the way you are going** (your movement direction when moving; the phone's compass when standing, where available; otherwise the direction of the route just ahead).
+- **You are a blue arrow** pointing the way you face, gliding smoothly between GPS updates, with a light circle showing how accurate the fix is. You sit in the lower part of the map so more of the road ahead is visible.
+- **Turn-by-turn walking** from the route engine's own walking directions: "↰ Turn left onto Varthur Road · In 41 m", then "THEN Arrive at Kundalahalli Gate". Unnamed paths are called "the path", never given a made-up name.
+- **Drag the map** and following pauses; a white **◎ Re-centre** button appears (bottom centre) to go back. Zooming keeps your chosen zoom while following.
+- While following, the live-bus check and panel changes no longer pull the map away from you (the buses still show as markers and in the card).
+- A rough network location (no GPS, e.g. a laptop) places the map once, from higher up, with a note "Approximate location (±N m): steps will not move by themselves"; it never jitters the map afterwards. Use ▶ Preview the trip to watch the full navigation on a computer.
+
+## Trip companion (Nov 2026)
+
+- **Stop countdown on the bus** (BMTC buses rarely announce stops): "4 stops to your stop", the next stops with their timetable times, yours marked 🏁, and the stops behind you dropped as you pass them (GPS against the bus's own stop list). Without GPS it is the plain stop list, no countdown.
+- **Live arrival time**: on the bus, "Arrive ~21:58 · ~5 min late · from your GPS · timetable 21:53" (worked out from when you passed the last stop against its timetabled time); waiting for a bus, from BMTC's live estimate for it. No evidence: the timetable time.
+- **Missed your stop**: more than 250 m past the get-off stop (two readings in a row, good GPS) → "You may have passed Hope Farm… Get off at the next stop" with "Find a new way from here".
+- **Wrong bus / off the route**: more than 400 m off the bus's road (two readings in a row) → "This bus seems to have left your route. Check the bus number."
+- **Spoken directions (🔊)**: "In 100 metres, turn left onto Varthur Road", "Turn left onto Varthur Road", "Hurry: your bus is due in about 3 minutes", "Your bus 328-HK is 2 stops away", "3 stops to Hope Farm", "Get ready: Hope Farm is next", "Get off here", the automatic step changes, "You have arrived". Each is said once, in English or Kannada.
+- **🔄 Find a new way from here** at the top of Trip info, any time during a trip.
+
 ## Testing live screens without the real feed
 
 `python scripts/simulated_bmtc_feed.py` starts a clearly labelled SIMULATION on port 8790: bus positions are invented, stop order is real. Set `BMTC_API_ROOT=http://127.0.0.1:8790/WebAPI` before `python app.py` to use it. Never use it to judge real bus locations. Opening the page with `?debug` exposes the app state as `window.__transit` for manual inspection.
@@ -111,7 +183,7 @@ Both panels have a slim pinned header with a one-line summary; click it (or ▾)
 ## Tests
 
 - `python -m unittest discover -s tests` (backend: journeys, departure time, search, assistant, Gemini layer with a faked Gemini, live relevance, HTTP contract and file-serving safety)
-- `node tests/map-state.test.cjs`, `node tests/live-buses.test.cjs`, `node tests/journey-live.test.cjs`, `node tests/live-alternates.test.cjs` (frontend state)
+- `node --test tests/*.cjs` (frontend: map state, live buses, journey steps, everyday features, arrival window, transfer guardian, rain, wait-or-walk, Kannada page text)
 - The older `tests/test_bmtc_live.py` is included in that unittest run.
 
 These use fixtures for the BMTC feed. Real vehicle accuracy, GPS movement and the live feed itself are not covered by automated tests.

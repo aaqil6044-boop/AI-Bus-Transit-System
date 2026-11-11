@@ -140,7 +140,9 @@ def geocode(query: str, *, transport=None) -> dict | None:
             time.sleep(wait)
         _last_call[0] = time.monotonic()
     try:
-        results = (transport or _nominatim)(text, GEOCODE_TIMEOUT)
+        from . import health
+        with health.timed("places"):
+            results = (transport or _nominatim)(text, GEOCODE_TIMEOUT)
     except Exception as error:   # network trouble: answer "not found" now, try again next time
         print(f"[Places] look-up failed for {text!r}: {type(error).__name__}: {error}", flush=True)
         return None

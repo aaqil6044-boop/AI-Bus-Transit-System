@@ -22,7 +22,9 @@ def _number(value, default=0):
 
 def _transfer(previous, current):
     scheduled = max(0, _number(current.get("wait_before_minutes")))
-    learned = previous.get("reliability") if isinstance(previous.get("reliability"), dict) else None
+    # Prefer the delay measured where the traveller gets off (delay builds up along a route).
+    learned = next((previous.get(key) for key in ("arrival_reliability", "reliability")
+                    if isinstance(previous.get(key), dict)), None)
     typical_delay = _number(learned.get("typical_delay_minutes")) if learned else 0
     # Early running does not make a connection safer: the incoming bus reaching
     # the interchange early merely leaves more waiting time for the passenger.

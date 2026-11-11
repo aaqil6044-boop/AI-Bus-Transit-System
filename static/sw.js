@@ -4,7 +4,7 @@
 // - /api/... (journeys, live buses, the assistant) is NEVER cached: a stored answer could pass old bus
 //   positions off as current. Without a connection those requests fail and the page says so.
 // - Map tiles come from other sites and are not touched.
-const CACHE = "bt-shell-2026-11-01-confidence-1";
+const CACHE = "bt-shell-2026-11-11-nav-6";
 const SHELL = ["/", "/static/styles.css", "/static/app.js", "/static/i18n.js", "/static/vendor/maplibre-gl.js",
     "/static/vendor/maplibre-gl.css", "/static/icons/icon-192.png", "/static/icons/icon-512.png", "/manifest.webmanifest"];
 

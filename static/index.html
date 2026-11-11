@@ -11,7 +11,7 @@
     <link rel="icon" href="/static/icons/icon-192.png" type="image/png">
     <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
     
-<link rel="stylesheet" href="/static/styles.css?v=20261027-features-2">
+<link rel="stylesheet" href="/static/styles.css?v=20261111-nav-6">
 <link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
 </head>
 
@@ -21,6 +21,74 @@
 
     <!-- MAP -->
     <main id="map"></main>
+
+    <!-- JOURNEY MODE: once a journey starts, the map gets the screen and one card says what to do now. -->
+    <div id="navControls" class="nav-controls" hidden aria-label="Map controls">
+        <button id="navVoice" type="button" class="nav-voice" title="Speak to the assistant" aria-label="Speak to the assistant">🎙</button>
+        <button id="navSpeak" type="button" title="Spoken directions on/off" aria-label="Spoken directions on or off">🔈</button>
+        <button id="navZoomIn" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
+        <button id="navZoomOut" type="button" title="Zoom out" aria-label="Zoom out">－</button>
+        <button id="navFollow" type="button" title="Follow me" aria-label="Follow me" aria-pressed="true">◎</button>
+        <button id="navStep" type="button" title="Show this step" aria-label="Show this step">📍</button>
+        <button id="navWhole" type="button" title="Show the whole trip" aria-label="Show the whole trip">⤢</button>
+    </div>
+    <section id="navCard" class="nav-card" hidden aria-label="Your journey">
+        <!-- What to do now, Google-Maps style: big green instruction, then a preview of the next step. -->
+        <div id="navHead" class="nav-head">
+        <div id="navPreviewBar" class="nav-preview-bar" hidden>
+            <span>▶ PREVIEW · simulated position, 15× speed</span>
+            <button id="navPreviewStop" type="button">■ Stop</button>
+        </div>
+        <div class="nav-banner">
+            <div id="navIcon" class="nav-icon" aria-hidden="true">🚶</div>
+            <div class="nav-text">
+                <h2 id="navTitle"></h2>
+                <p id="navLine" class="nav-line"></p>
+            </div>
+        </div>
+        <div id="navThen" class="nav-then" hidden></div>
+        <div id="navAlert" class="nav-alert" role="alert" hidden></div>
+        </div>
+        <div id="navSheet" class="nav-sheet">
+            <button id="navGrab" type="button" class="nav-grab" aria-label="Show steps and live buses" aria-expanded="false"><i></i></button>
+            <div class="nav-eta">
+                <div class="nav-eta-main">
+                    <strong id="navArrive"></strong>
+                    <span id="navLeft"></span>
+                </div>
+                <div id="navProgress" class="nav-progress"></div>
+            </div>
+            <div id="navChips" class="nav-chips"></div>
+            <div id="navBuses" class="nav-buses" hidden></div>
+            <div id="navStops" class="nav-stops" hidden></div>
+            <div id="navNoGps" class="nav-nogps" hidden>
+                <span>No GPS on this device. On a phone the steps move on by themselves as you travel.</span>
+                <button id="navNoGpsPreview" type="button">▶ Preview the trip</button>
+            </div>
+            <div class="nav-actions">
+                <button id="navPrev" type="button" aria-label="Previous step" title="Previous step">◀</button>
+                <button id="navNext" type="button" class="nav-next">Next step ▶</button>
+                <button id="navMore" type="button" class="nav-more" aria-expanded="false">⌃ Steps</button>
+            </div>
+            <div id="navBody" class="nav-body">
+                <div class="nav-tabs" role="tablist">
+                    <button type="button" class="nav-tab active" data-tab="steps" role="tab">🧭 Steps</button>
+                    <button type="button" class="nav-tab" data-tab="live" role="tab">🚌 Live buses <b id="navLiveCount"></b></button>
+                    <button type="button" class="nav-tab" data-tab="info" role="tab">ⓘ Trip info</button>
+                </div>
+                <div id="navPaneSteps" class="nav-pane" data-pane="steps"></div>
+                <div id="navPaneLive" class="nav-pane" data-pane="live" hidden></div>
+                <div id="navPaneInfo" class="nav-pane" data-pane="info" hidden></div>
+                <div class="nav-footer">
+                    <button id="navPreviewBtn" type="button" class="nav-preview-btn">▶ Preview the trip</button>
+                    <button id="navDetails" type="button" class="nav-details">☰ Full guide &amp; live panel</button>
+                    <button id="navEnd" type="button" class="nav-end">✕ End journey</button>
+                </div>
+            </div>
+        </div>
+    </section>
+    <button id="navBackToMap" type="button" class="nav-back" hidden>🗺 Back to map</button>
+    <button id="navRecenter" type="button" class="nav-recenter" hidden>◎ Re-centre</button>
 
     <!-- TOP BAR -->
     <header class="topbar">
@@ -35,6 +103,13 @@
         </div>
 
         <div class="top-actions">
+
+            <!-- Phone: the assistant box is covered while routes or guidance are showing; keep voice and photo one tap away. -->
+            <button id="quickVoiceBtn" class="icon-button quick-assist-button" type="button"
+                title="Speak to the assistant" data-i18n-title aria-label="Speak to the assistant">🎙</button>
+            <button id="quickSnapBtn" class="icon-button quick-assist-button" type="button"
+                title="Snap & go: photo of a bus, stop board or address" data-i18n-title
+                aria-label="Snap & go: photo of a bus, stop board or address">📷</button>
 
             <button
                 id="locateBtn"
@@ -157,6 +232,7 @@
         <!-- SAVED PLACES / RECENT TRIPS -->
         <div id="placeChips" class="place-chips" aria-label="Saved places and recent trips"></div>
         <div id="reminderPill" class="reminder-pill" role="status" hidden></div>
+        <div id="usualCard" class="usual-card" role="region" aria-label="Your usual trip" hidden></div>
         <div id="whatsNew" class="whats-new" role="note" hidden></div>
 
         <!-- DEPARTURE TIME -->
@@ -185,6 +261,16 @@
                     placeholder="Try: from Hope Farm to Majestic, less walking" data-i18n-ph
                     autocomplete="off"
                 >
+
+                <button
+                    id="snapBtn"
+                    class="voice-button snap-button"
+                    type="button"
+                    title="Snap & go: photo of a bus, stop board or address" data-i18n-title
+                >
+                    📷
+                </button>
+                <input id="snapInput" type="file" accept="image/*" capture="environment" hidden>
 
                 <button
                     id="voiceBtn"
@@ -312,6 +398,7 @@
             >
                 🎙
             </button>
+            <button id="chatSnapBtn" class="chat-icon-button" type="button" title="Snap & go: photo of a bus, stop board or address" data-i18n-title>📷</button>
 
             <input
                 id="chatInput"
@@ -350,6 +437,7 @@
                     Recommended routes
                 </h2>
                 <p id="routeMeta" class="route-meta"></p>
+                <div id="rainNote" class="rain-note" role="note" hidden></div>
                 <div class="route-prefs" role="group" aria-label="Rank journeys by">
                     <button class="quick-chip" type="button" data-preference="less_walking" aria-pressed="false">🚶 Less walking</button>
                     <button class="quick-chip" type="button" data-preference="fewer_transfers" aria-pressed="false">🔄 Fewer transfers</button>
@@ -432,6 +520,9 @@
         <h2 id="guideTitle"></h2>
         <p id="guideDetail"></p>
         <p id="guideGps" role="status" aria-live="polite">Waiting for your location…</p>
+        <div id="guideWindow" class="guide-window" hidden></div>
+        <div id="guideTransfer" class="guide-transfer" role="status" aria-live="polite" hidden></div>
+        <div id="guideWalk" class="guide-walk" hidden></div>
         <div class="guide-controls">
             <button id="guidePrev" type="button" data-i18n>Previous</button>
             <button id="guideNext" type="button">Next step</button>
@@ -453,6 +544,7 @@
         <p id="liveBusStatus" class="live-headline" role="status" aria-live="polite">Connecting to BMTC…</p>
         <p id="liveBusMeta" class="live-meta"></p>
         <p id="liveReliability" class="live-reliability" hidden></p>
+        <div id="liveWindow" class="live-window" hidden></div>
         <div class="guide-controls live-top-controls"><button id="liveBusRefresh" type="button">Refresh now</button><button id="liveBusStop" type="button" data-i18n>Stop live tracking</button></div>
         </div>
         <div id="liveBusList"></div>
@@ -466,6 +558,8 @@
     </div>
     <button id="showPanelsBtn" class="show-panels-pill" type="button" hidden aria-label="Show the trip panels again" data-i18n>▲ Show trip panels</button>
     <div id="quickMenu" class="quick-menu" hidden></div>
+    <section id="nearbyPanel" class="nearby-panel" aria-label="Stops near you" hidden></section>
+    <button id="talkBtn" class="talk-button" type="button" hidden title="Tap and speak" data-i18n-title>🎙</button>
     <!-- STATUS -->
     <div
         id="statusToast"
@@ -495,8 +589,8 @@
 
 
 <script src="/static/vendor/maplibre-gl.js"></script>
-<script src="/static/i18n.js?v=20261027-features-2"></script>
-<script src="/static/app.js?v=20261027-features-2"></script>
+<script src="/static/i18n.js?v=20261111-nav-6"></script>
+<script src="/static/app.js?v=20261111-nav-6"></script>
 </body>
 </html>
 

@@ -6,7 +6,14 @@ The difference is a measured delay, not a guess. This module stores those measur
 bus per stop per day, duplicates ignored) and summarises them by route, hour and weekday/weekend.
 
 A summary is shown only with enough evidence (MIN_SAMPLES measurements over MIN_DAYS days); before
-that, nothing is shown. If BMTC's feed does not include the two times, nothing is recorded.
+that, nothing is shown.
+
+BMTC sometimes pairs a bus with the wrong timetable trip (one an hour earlier or later). Such a run looks
+"76 min late" or "30 min early" from its very first stop, which a real bus almost never is: a real delay
+starts small and builds up along the route. Runs whose delay at their first recorded stops is outside
+START_OK are therefore left out of every summary (the raw rows are kept, so the rule can be improved).
+Because delay builds up along a route, a summary for the traveller's own stop (BMTC's station ids are the
+timetable's stop ids) is preferred; the whole-route figure is only a fallback. If BMTC's feed does not include the two times, nothing is recorded.
 Measurements older than KEEP_DAYS are deleted.
 """
 from __future__ import annotations
@@ -22,7 +29,10 @@ from pathlib import Path
 
 IST = timezone(timedelta(hours=5, minutes=30))
 MIN_SAMPLES = 12
+MIN_STOP_SAMPLES = 6        # at one stop: fewer measurements, but still on MIN_DAYS different days
 MIN_DAYS = 3
+START_OK = (-10, 20)        # minutes: a run starting outside this was paired with the wrong trip
+RUN_GAP_MINUTES = 90        # the same bus later the same day is a new run
 KEEP_DAYS = 60
 MAX_LATE = 180       # minutes; anything beyond is a data error, not a delay
 MAX_EARLY = 30
@@ -115,6 +125,7 @@ def record(route_number: str, details_by_route, now: datetime | None = None, pat
         if not rows:
             return 0
         cutoff = ((now or datetime.now(IST)).astimezone(IST).date() - timedelta(days=KEEP_DAYS)).isoformat()
+        _rows_cache.clear()
         with _lock, closing(_connect(path)) as conn, conn:
             conn.executemany("INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
             conn.execute("DELETE FROM observations WHERE day < ?", (cutoff,))
@@ -130,9 +141,53 @@ def record_in_background(route_number: str, details_by_route) -> None:
     threading.Thread(target=record, args=(route_number, details_by_route), daemon=True).start()
 
 
-def summary(route_name: str, when: datetime | None = None, path=None) -> dict | None:
-    """Typical delay for this bus number around this hour (weekday or weekend), or None when there
-    is not enough evidence yet."""
+_rows_cache: dict = {}
+
+
+def _clean_rows(path, base: str, weekend: int):
+    """All measurements for this bus number (weekday or weekend) with mispaired runs left out:
+    [(delay, day, hour, station), ...]. Cached for two minutes."""
+    import time
+    key = (str(path), base, weekend)
+    cached = _rows_cache.get(key)
+    if cached and time.monotonic() - cached[0] < 120:
+        return cached[1]
+    with closing(_connect(path)) as conn:
+        rows = conn.execute(
+            "SELECT route, vehicle, day, direction, station, scheduled, delay FROM observations "
+            "WHERE base = ? AND weekend = ? LIMIT 50000", (base, weekend)).fetchall()
+    runs: dict = {}
+    for route, vehicle, day, direction, station, scheduled, delay in rows:
+        minute = _minutes(scheduled)
+        if minute is not None:
+            runs.setdefault((route, vehicle, day, direction), []).append((minute, delay, day, station))
+    kept = []
+    for items in runs.values():
+        items.sort()
+        run = [items[0]]
+        for previous, item in zip(items, items[1:]):
+            if item[0] - previous[0] > RUN_GAP_MINUTES:
+                kept.extend(_good_run(run))
+                run = []
+            run.append(item)
+        kept.extend(_good_run(run))
+    if len(_rows_cache) > 200:
+        _rows_cache.clear()
+    _rows_cache[key] = (time.monotonic(), kept)
+    return kept
+
+
+def _good_run(run):
+    start = statistics.median(delay for _minute, delay, _day, _station in run[:3])
+    if not START_OK[0] <= start <= START_OK[1]:
+        return []
+    return [(delay, day, minute // 60, station) for minute, delay, day, station in run]
+
+
+def summary(route_name: str, when: datetime | None = None, path=None, *, station: str | None = None,
+            station_name: str | None = None) -> dict | None:
+    """Typical delay for this bus number around this hour (weekday or weekend): at ``station`` when
+    there is enough evidence there, otherwise across the route. None when there is not enough evidence."""
     when = (when or datetime.now(IST)).astimezone(IST)
     base = base_route(route_name)
     if not base:
@@ -140,34 +195,39 @@ def summary(route_name: str, when: datetime | None = None, path=None) -> dict | 
     try:
         if not Path(path or database_path()).exists():
             return None
-        with closing(_connect(path)) as conn:
-            hours = [(when.hour + offset) % 24 for offset in (-1, 0, 1)]
-            rows = conn.execute(
-                "SELECT delay, day FROM observations WHERE base = ? AND weekend = ? AND hour IN (?,?,?)",
-                (base, 1 if when.weekday() >= 5 else 0, *hours)).fetchall()
+        rows = _clean_rows(path or database_path(), base, 1 if when.weekday() >= 5 else 0)
     except sqlite3.Error:
         return None
-    days = {day for _delay, day in rows}
-    if len(rows) < MIN_SAMPLES or len(days) < MIN_DAYS:
+    hours = [(when.hour + offset) % 24 for offset in (-1, 0, 1)]
+    window = [row for row in rows if row[2] in hours]
+    period = "weekends" if when.weekday() >= 5 else "weekdays"
+    at_stop = [row for row in window if station and str(row[3]) == str(station)]
+    if at_stop and len(at_stop) >= MIN_STOP_SAMPLES and len({row[1] for row in at_stop}) >= MIN_DAYS:
+        chosen, scope = at_stop, "stop"
+    elif len(window) >= MIN_SAMPLES and len({row[1] for row in window}) >= MIN_DAYS:
+        chosen, scope = window, "route"
+    else:
         return None
-    delays = sorted(delay for delay, _day in rows)
+    delays = sorted(row[0] for row in chosen)
+    days = {row[1] for row in chosen}
     quartiles = statistics.quantiles(delays, n=4) if len(delays) >= 4 else [delays[0], 0, delays[-1]]
     typical = round(statistics.median(delays))
     low, high = round(quartiles[0]), round(quartiles[2])
     if abs(typical) <= 2:
-        text = "usually on time"
+        how = "usually on time"
     elif typical > 0:
-        text = f"usually about {typical} min late"
+        how = f"usually about {typical} min late"
     else:
-        text = f"usually about {-typical} min early"
-    period = "weekends" if when.weekday() >= 5 else "weekdays"
+        how = f"usually about {-typical} min early"
+    where = f" at {station_name}" if scope == "stop" and station_name else " at this stop" if scope == "stop" else ""
+    note = "" if scope == "stop" else " Delays build up along the route, so it depends on the stop."
     return {
         "route": base, "typical_delay_minutes": typical, "range_minutes": [low, high],
-        "samples": len(delays), "days": len(days), "period": period,
+        "samples": len(delays), "days": len(days), "period": period, "scope": scope,
         "hours": f"{hours[0]:02d}:00–{(hours[2] + 1) % 24:02d}:00",
-        "text": f"{base} is {text} around this time on {period} "
-                f"(range {low} to {high} min; {len(delays)} BMTC measurements over {len(days)} days).",
-        "source": "Measured from BMTC's own scheduled and actual times",
+        "text": f"{base} is {how}{where} around this time on {period} "
+                f"(range {low} to {high} min; {len(delays)} BMTC measurements over {len(days)} days).{note}",
+        "source": "Measured from BMTC's own scheduled and actual times (runs BMTC paired with the wrong trip are left out)",
     }
 
 
@@ -181,6 +241,16 @@ def annotate(routes, path=None) -> None:
                 when = datetime.fromisoformat(leg.get("departure_iso") or "")
             except (TypeError, ValueError):
                 when = None
-            found = summary(leg.get("route_name") or "", when, path)
+            found = summary(leg.get("route_name") or "", when, path, station=leg.get("from_stop_id") or None,
+                            station_name=(leg.get("from") or {}).get("name"))
             if found:
                 leg["reliability"] = found
+            # Delay where the traveller gets off: what decides whether a connection is safe.
+            try:
+                arrival = datetime.fromisoformat(leg.get("arrival_iso") or "")
+            except (TypeError, ValueError):
+                arrival = None
+            at_alight = summary(leg.get("route_name") or "", arrival, path, station=leg.get("to_stop_id") or None,
+                                station_name=(leg.get("to") or {}).get("name"))
+            if at_alight:
+                leg["arrival_reliability"] = at_alight

@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import reliability
+from . import health, reliability
 
 API_ROOT = os.environ.get(
     "BMTC_API_ROOT", "https://bmtcmobileapi.karnataka.gov.in/WebAPI"
@@ -62,7 +62,7 @@ def _post(endpoint: str, payload: dict) -> dict:
         }, method="POST",
     )
     try:
-        with build_opener(ProxyHandler({})).open(request, timeout=7) as response:
+        with health.timed("bmtc"), build_opener(ProxyHandler({})).open(request, timeout=7) as response:
             result = json.load(response)
     except HTTPError as error:
         if error.code in (401, 403):

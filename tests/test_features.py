@@ -219,3 +219,151 @@ class MetroImportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- Snap & go
+import base64                                    # noqa: E402
+from transit import gemini                        # noqa: E402
+
+PHOTO = base64.b64encode(b"\xff\xd8\xff\xe0fake-jpeg-bytes").decode()
+
+
+def photo_reply(**args):
+    """A Gemini answer calling read_photo with these arguments."""
+    def transport(url, body, key, timeout):
+        transport.body = body
+        return 200, {"candidates": [{"content": {"parts": [{"functionCall": {"name": "read_photo", "args": args}}]}}]}
+    return transport
+
+
+class SnapTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.db = make_database([("1", "Hope Farm", 12.984, 77.752), ("2", "Kempegowda Bus Station", 12.977, 77.571),
+                                ("3", "Silk Board", 12.917, 77.623)])
+
+    def setUp(self):
+        env = patch.dict(os.environ, {"GEMINI_API_KEY": "photo-test-key", "GEMINI_MODEL": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def snap(self, transport, **extra):
+        return assistant.handle_snap(self.db, {"image": PHOTO, "mime": "image/jpeg", **extra}, gemini_transport=transport)
+
+    def test_bus_photo_starts_live_tracking(self):
+        transport = photo_reply(kind="bus", route_number="500-d", destination="Hebbal", text_seen="500-D HEBBAL")
+        result = self.snap(transport)
+        self.assertEqual((result["intent"], result["route"]), ("live", "500-D"))
+        self.assertIn("500-D to Hebbal", result["reply"])
+        part = transport.body["contents"][0]["parts"][0]["inlineData"]
+        self.assertEqual(part["mimeType"], "image/jpeg")          # the photo itself goes to Gemini
+        self.assertEqual(part["data"], PHOTO)
+
+    def test_stop_board_becomes_the_start(self):
+        result = self.snap(photo_reply(kind="stop", place_name="Silk Board", text_seen="ಸಿಲ್ಕ್ ಬೋರ್ಡ್"))
+        self.assertEqual(result["intent"], "partial")
+        self.assertEqual(result["origin"]["stop_name"], "Silk Board")
+        self.assertIn("I read: “ಸಿಲ್ಕ್ ಬೋರ್ಡ್”", result["reply"])
+
+    def test_stop_board_with_a_destination_plans(self):
+        plan = {"origin": {"stop_name": "Silk Board"}, "destination": {"stop_name": "Hope Farm"}, "routes": [],
+                "requested": {"label": "Now"}, "fallback": {"message": "none in this fixture"}}
+        with patch.object(assistant, "plan_journey", return_value=plan) as planner:
+            result = self.snap(photo_reply(kind="stop", place_name="Silk Board", text_seen="Silk Board"),
+                               destination={"id": "1", "name": "Hope Farm", "lat": 12.984, "lon": 77.752})
+        self.assertEqual(result["intent"], "plan")
+        self.assertEqual(planner.call_args.args[1:3], ("3", "1"))
+
+    def test_address_without_a_start_uses_my_location(self):
+        result = self.snap(photo_reply(kind="place", place_name="Kempegowda Bus Station", text_seen="KBS"))
+        self.assertEqual(result["intent"], "use_location")
+        self.assertEqual(result["destination"]["stop_name"], "Kempegowda Bus Station")
+
+    def test_unknown_place_is_reported_not_invented(self):
+        result = self.snap(photo_reply(kind="place", place_name="Atlantis Towers", text_seen="Atlantis Towers"))
+        self.assertFalse(result["ok"])
+        self.assertIn("could not find it", result["reply"])
+
+    def test_unreadable_and_guessed_numbers(self):
+        self.assertFalse(self.snap(photo_reply(kind="unreadable", text_seen=""))["ok"])
+        # "route number" with no digit is not a route; a bus reading without a number is not trusted
+        reading = gemini.parse_photo({"candidates": [{"content": {"parts": [{"functionCall": {"name": "read_photo",
+                  "args": {"kind": "bus", "route_number": "HEBBAL", "text_seen": "HEBBAL"}}}]}}]})
+        self.assertEqual(reading["kind"], "unreadable")
+        self.assertIsNone(reading["route"])
+
+    def test_no_key_bad_image_and_gemini_errors(self):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            self.assertIn("needs Gemini", self.snap(photo_reply(kind="bus", route_number="500D", text_seen=""))["reply"])
+        bad = assistant.handle_snap(self.db, {"image": "not base64!!", "mime": "image/jpeg"})
+        self.assertIn("could not be used", bad["reply"])
+        gif = assistant.handle_snap(self.db, {"image": PHOTO, "mime": "image/gif"})
+        self.assertIn("could not be used", gif["reply"])
+        busy = self.snap(lambda url, body, key, timeout: (429, {}))
+        self.assertIn("free quota", busy["reply"])
+
+    def test_kannada_reply(self):
+        result = self.snap(photo_reply(kind="bus", route_number="500D", text_seen="500D"), lang="kn")
+        self.assertIn("ಬಸ್", result["reply"])
+
+
+class DelayDataQualityTests(unittest.TestCase):
+    """Runs BMTC paired with the wrong timetable trip are left out; the traveller's own stop is preferred."""
+
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "rel.db"
+        reliability._rows_cache.clear()
+
+    def run_of(self, vehicle, start_delay, growth, stations=("s1", "s2", "s3", "s4", "s5", "s6")):
+        rows = []
+        for i, station in enumerate(stations):
+            scheduled = 9 * 60 + i * 5
+            actual = scheduled + start_delay + growth * i
+            rows.append((station, vehicle, f"{scheduled // 60:02d}:{scheduled % 60:02d}", f"{actual // 60:02d}:{actual % 60:02d}"))
+        return rows
+
+    def record_days(self, rows_for_day, days=(14, 15, 16)):
+        for day in days:
+            reliability.record("500-D", details(rows_for_day), datetime(2026, 10, day, 11, 30, tzinfo=IST), self.path)
+
+    def test_mispaired_runs_are_left_out(self):
+        good = self.run_of("v1", 2, 2)                 # starts on time, slips to 12 min late
+        wrong_trip = self.run_of("v2", 76, 1)          # "76 min late" from the first stop: wrong pairing
+        early_pair = self.run_of("v3", -30, 1)         # "30 min early" from the first stop: wrong pairing
+        self.record_days(good + wrong_trip + early_pair)
+        found = reliability.summary("500-D", datetime(2026, 10, 21, 9, 15, tzinfo=IST), self.path)
+        self.assertEqual(found["samples"], 18, "only the good run counts (6 stops x 3 days)")
+        self.assertEqual(found["range_minutes"][1] <= 12, True)
+        self.assertEqual(found["scope"], "route")
+        self.assertIn("depends on the stop", found["text"])
+
+    def test_own_stop_is_preferred_when_there_is_enough_there(self):
+        self.record_days(self.run_of("v1", 0, 3) + self.run_of("v2", 1, 3))
+        when = datetime(2026, 10, 21, 9, 15, tzinfo=IST)
+        at_s6 = reliability.summary("500-D", when, self.path, station="s6", station_name="Hebbal")
+        self.assertEqual(at_s6["scope"], "stop")
+        self.assertIn("at Hebbal", at_s6["text"])
+        self.assertGreaterEqual(at_s6["typical_delay_minutes"], 15, "late at the end of the route")
+        at_s1 = reliability.summary("500-D", when, self.path, station="s1", station_name="Start")
+        self.assertLessEqual(at_s1["typical_delay_minutes"], 1, "on time near the start")
+        thin = reliability.summary("500-D", when, self.path, station="nowhere")
+        self.assertEqual(thin["scope"], "route", "no data at that stop: whole-route figure")
+
+    def test_annotate_adds_boarding_and_alighting_figures(self):
+        self.record_days(self.run_of("v1", 0, 3) + self.run_of("v2", 1, 3))
+        legs = [{"transit": True, "role": "bus", "route_name": "500-D", "from_stop_id": "s1", "to_stop_id": "s6",
+                 "from": {"name": "Start"}, "to": {"name": "Hebbal"},
+                 "departure_iso": "2026-10-21T09:00:00+05:30", "arrival_iso": "2026-10-21T09:25:00+05:30"}]
+        reliability.annotate([{"legs": legs}], self.path)
+        self.assertEqual(legs[0]["reliability"]["scope"], "stop")
+        self.assertLessEqual(legs[0]["reliability"]["typical_delay_minutes"], 1)
+        self.assertGreaterEqual(legs[0]["arrival_reliability"]["typical_delay_minutes"], 15)
+
+    def test_connection_confidence_uses_the_delay_where_you_get_off(self):
+        from transit import confidence
+        previous = {"route_name": "500-D", "reliability": {"typical_delay_minutes": 0},
+                    "arrival_reliability": {"typical_delay_minutes": 12}}
+        current = {"route_name": "G-4", "wait_before_minutes": 10, "from": {"name": "Hebbal"}}
+        transfer = confidence._transfer(previous, current)
+        self.assertEqual(transfer["reliability_adjustment_minutes"], 12)
+        self.assertEqual(transfer["status"], "risky")

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from . import gemini, places, reliability
+from . import gemini, kannada, places, reliability
 from .otp import RouterUnavailable, plan_journey
 from .planner import STOP_ALIASES, normalize_stop_text, search_stops
 
@@ -23,7 +23,8 @@ HELP = ("I can plan Bengaluru bus journeys from your typed or spoken commands. "
         "or say \"swap\" to reverse the trip. I am a simple built-in helper, not a general chatbot.")
 
 HELP_KN = ("ನಿಮ್ಮ ಟೈಪ್ ಮಾಡಿದ ಅಥವಾ ಮಾತನಾಡಿದ ಆಜ್ಞೆಗಳಿಂದ ನಾನು ಬೆಂಗಳೂರು ಬಸ್ ಪ್ರಯಾಣಗಳನ್ನು ಯೋಜಿಸುತ್ತೇನೆ. "
-           "ಉದಾಹರಣೆ: \"from Hope Farm to Majestic\", ಜೊತೆಗೆ \"less walking\", \"fewer transfers\" ಅಥವಾ \"leave at 9:30 pm\".")
+           "ಉದಾಹರಣೆ: \"ಹೆಬ್ಬಾಳದಿಂದ ಮೆಜೆಸ್ಟಿಕ್‌ಗೆ\", \"ಇಲ್ಲಿಂದ ಜಯನಗರಕ್ಕೆ ಕಡಿಮೆ ನಡಿಗೆ\", \"ಸಂಜೆ 6 ಗಂಟೆಗೆ ಮನೆಗೆ\", "
+           "\"500D ಎಲ್ಲಿದೆ\" ಅಥವಾ \"ವಾಪಸ್\". ಇಂಗ್ಲಿಷ್ ಆಜ್ಞೆಗಳೂ ಕೆಲಸ ಮಾಡುತ್ತವೆ (\"from Hope Farm to Majestic\").")
 
 
 def _kn(payload) -> bool:
@@ -233,6 +234,11 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
         raise ValueError("Type a command such as \"from Hope Farm to Majestic\".")
     if len(message) > 300:
         raise ValueError("Please keep the command under 300 characters.")
+    original = message
+    if kannada.has_kannada(message):
+        # Kannada typed or spoken: answer in Kannada, and read the request with BMTC's own Kannada stop names.
+        payload = {**payload, "lang": "kn"}
+        message = kannada.to_command(database, message) or message
     rules = parse_command(message)
 
     # Keep the chat feeling immediate. Greetings and commands the deterministic parser fully
@@ -273,7 +279,7 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
         destination_now = _context_to_stop(_context_stop(payload.get("destination")))
         try:
             ai = gemini.understand(
-                message, transport=gemini_transport,
+                original, transport=gemini_transport,
                 origin_name=origin_now["stop_name"] if origin_now else None,
                 destination_name=destination_now["stop_name"] if destination_now else None,
                 preference=payload.get("preference"), depart_at=payload.get("depart_at"),
@@ -495,3 +501,82 @@ def _summary_kn(plan: dict) -> str:
 def _reply(reply: str, *, intent: str, origin=None, destination=None, preference="fastest", depart_at=None, plan=None) -> dict:
     return {"ok": intent != "error", "intent": intent, "reply": reply, "origin": origin, "destination": destination,
             "preference": preference, "depart_at": depart_at, "plan": plan}
+
+
+# ---------------------------------------------------------------- Snap & go
+_PHOTO_FAILURE = {
+    "no_key": ("Snap & go needs Gemini, which is not set up on this server (GEMINI_API_KEY).",
+               "Snap & go ಗೆ Gemini ಬೇಕು; ಈ ಸರ್ವರ್‌ನಲ್ಲಿ ಅದು ಹೊಂದಿಸಿಲ್ಲ (GEMINI_API_KEY)."),
+    "timeout": ("Gemini took too long to read the photo. Try again, or type the name.",
+                "ಫೋಟೋ ಓದಲು Gemini ತಡ ಮಾಡಿತು. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ, ಅಥವಾ ಹೆಸರನ್ನು ಟೈಪ್ ಮಾಡಿ."),
+    "rate_limited": ("Gemini's free quota is used up for the moment. Try again in a minute, or type the name.",
+                     "Gemini ಉಚಿತ ಮಿತಿ ಸದ್ಯಕ್ಕೆ ಮುಗಿದಿದೆ. ಒಂದು ನಿಮಿಷದ ನಂತರ ಪ್ರಯತ್ನಿಸಿ, ಅಥವಾ ಹೆಸರನ್ನು ಟೈಪ್ ಮಾಡಿ."),
+}
+
+
+def _photo_failure(reason: str, payload) -> str:
+    english, kannada = _PHOTO_FAILURE.get(reason, (
+        "I could not read that photo right now. Try again, or type the name.",
+        "ಈಗ ಆ ಫೋಟೋ ಓದಲು ಆಗಲಿಲ್ಲ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ, ಅಥವಾ ಹೆಸರನ್ನು ಟೈಪ್ ಮಾಡಿ."))
+    return kannada if _kn(payload) else english
+
+
+def handle_snap(database, payload: dict, now=None, gemini_transport=None) -> dict:
+    """A photo of a bus, a stop board or a written address -> track the bus or plan the trip.
+
+    Gemini only reads the text in the photo; places are then found in the BMTC stop list (and on
+    OpenStreetMap), and journeys come from the normal planner, exactly as for a typed message."""
+    import base64
+    keep = dict(origin=_context_to_stop(_context_stop(payload.get("origin"))),
+                destination=_context_to_stop(_context_stop(payload.get("destination"))),
+                preference=payload.get("preference") if payload.get("preference") in gemini.PREFERENCES else "fastest",
+                depart_at=payload.get("depart_at") or None)
+    mime = str(payload.get("mime") or "image/jpeg")
+    try:
+        image = base64.b64decode(str(payload.get("image") or ""), validate=True)
+    except (ValueError, TypeError):
+        image = b""
+    if mime not in gemini.PHOTO_TYPES or not image or len(image) > gemini.MAX_PHOTO_BYTES:
+        return _reply("That photo could not be used. Send a JPEG or PNG under 4 MB.", intent="error", **keep)
+    try:
+        reading = gemini.read_photo(image, mime, transport=gemini_transport)
+    except gemini.GeminiUnavailable as error:
+        result = _reply(_photo_failure(error.reason, payload), intent="error", **keep)
+        result["engine"] = "gemini"
+        return result
+    kind, seen = reading["kind"], reading["seen"]
+    quote = f" (I read: “{seen}”)" if seen else ""
+    if kind == "bus":
+        toward = f" to {reading['destination']}" if reading["destination"] else ""
+        result = _reply((f"ಇದು {reading['route']} ಬಸ್{(' → ' + reading['destination']) if reading['destination'] else ''}. "
+                         "BMTC ಲೈವ್ ಸ್ಥಾನಗಳನ್ನು ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ…") if _kn(payload) else
+                        f"That is bus {reading['route']}{toward}{quote}. Checking BMTC live positions…", intent="live", **keep)
+        result["route"] = reading["route"]
+    elif kind in ("stop", "place"):
+        rules = {"origin": None, "destination": None, "preference": None, "depart_at": None, "swap": False}
+        parsed = dict(rules, **({"origin": reading["place"]} if kind == "stop" else {"destination": reading["place"]}))
+        if kind == "place" and keep["origin"] is None:
+            # Where the traveller wants to go, and no start chosen: start from their location.
+            stop, _others, suggestions = resolve_place(database, reading["place"])
+            if stop is None:
+                hint = (" Closest names: " + ", ".join(suggestions) + ".") if suggestions else ""
+                result = _reply(f"I read “{reading['place']}” but could not find it as a BMTC stop or a Bengaluru place.{hint}",
+                                intent="error", **keep)
+            else:
+                notes = []
+                _take_note(stop, notes)
+                result = _reply(" ".join([f"Going to {stop['stop_name']}{quote}. Using your current location as the start."] + notes),
+                                intent="use_location", destination=stop, preference=keep["preference"],
+                                depart_at=keep["depart_at"])
+        else:
+            result = _answer(database, payload, parsed, None, now)
+            if result.get("intent") in ("plan", "partial") and quote:
+                result["reply"] = f"{result['reply']}{quote}"
+    else:
+        result = _reply(("ಈ ಫೋಟೋದಲ್ಲಿ ಬಸ್ ಸಂಖ್ಯೆ, ನಿಲ್ದಾಣ ಅಥವಾ ವಿಳಾಸ ಓದಲು ಆಗಲಿಲ್ಲ. ಹತ್ತಿರದಿಂದ, ಸ್ಪಷ್ಟವಾಗಿ ಮತ್ತೊಂದು ಫೋಟೋ ತೆಗೆಯಿರಿ.")
+                        if _kn(payload) else
+                        f"I could not read a bus number, stop or address in that photo{quote}. Try a closer, sharper photo.",
+                        intent="error", **keep)
+    result["engine"] = "gemini"
+    result["photo"] = reading
+    return result
