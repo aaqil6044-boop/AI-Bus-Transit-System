@@ -132,6 +132,16 @@ class HealthTrackerTests(unittest.TestCase):
         health.record("nope", True)
         self.assertNotIn("nope", health.snapshot()["services"])
 
+    def test_bmtc_needs_two_consecutive_failures_before_outage(self):
+        health.record("bmtc", True, 0.2)
+        health.record("bmtc", False, None, "TimeoutError: intermittent")
+        self.assertEqual(health.status("bmtc"), "ok")
+        self.assertEqual(health.snapshot()["services"]["bmtc"]["consecutive_failures"], 1)
+        health.record("bmtc", False, None, "TimeoutError: still unavailable")
+        self.assertEqual(health.status("bmtc"), "down")
+        health.record("bmtc", True, 0.2)
+        self.assertEqual(health.status("bmtc"), "ok")
+
 
 if __name__ == "__main__":
     unittest.main()
