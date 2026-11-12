@@ -217,6 +217,21 @@ def resolve_departure(profile, now=None):
     return requested, f'{day_name} {requested:%H:%M}', False
 
 
+def next_service_probe(requested):
+    """Choose one safe retry time when a late-night ``Now`` query has no buses.
+
+    During normal service hours, an empty result may mean the stop pair is genuinely disconnected,
+    so it is never moved silently. Between 22:00 and 05:00, the next 05:00 timetable search gives
+    the traveller a useful next-morning journey instead of a dead-end card.
+    """
+    local = requested.astimezone(IST)
+    if local.hour >= 22:
+        return (local + timedelta(days=1)).replace(hour=5, minute=0, second=0, microsecond=0)
+    if local.hour < 5:
+        return local.replace(hour=5, minute=0, second=0, microsecond=0)
+    return None
+
+
 def _clock(value):
     return _date(value).astimezone(IST).strftime('%H:%M')
 
@@ -577,6 +592,15 @@ def plan_journey(database, origin_id, destination_id, profile=None,
 
     plan = search(requested)
     found = build_routes(plan, requested, profile, excluded)
+    next_service_at = None
+    if not found and is_now:
+        # Keep ``requested`` as the timing baseline so each card shows the traveller's real wait.
+        probe = next_service_probe(requested)
+        if probe is not None:
+            next_plan = search(probe)
+            next_found = build_routes(next_plan, requested, profile, excluded)
+            if next_found:
+                plan, found, next_service_at = next_plan, next_found, probe
     if found and len(found) < 2:
         # Only one usable option: look a little later for a backup. Avoid a second expensive
         # router search when the first query already produced a useful choice of journeys.
@@ -619,6 +643,13 @@ def plan_journey(database, origin_id, destination_id, profile=None,
               'requested': {'iso': requested.isoformat(), 'label': requested_label, 'is_now': is_now},
               'notice': 'Times come from the BMTC timetable and exclude live traffic. They are not live arrivals.',
               'fallback': fallback}
+    if next_service_at is not None:
+        result['next_service'] = {
+            'automatic': True,
+            'search_from': next_service_at.isoformat(),
+            'message': 'No buses are scheduled right now, so these are the next morning services.'
+        }
+        result['notice'] = result['next_service']['message'] + ' ' + result['notice']
     if routes:
         try:
             from transit import fares

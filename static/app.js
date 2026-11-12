@@ -125,7 +125,7 @@
         if (banner) banner.hidden = true;
     }
 
-    const APP_BUILD = "2026-11-11-nav-6";   // must match BUILD in app.py
+    const APP_BUILD = "2026-11-13-next-service-1";   // must match BUILD in app.py
 
     async function checkHealth() {
         try {
@@ -1329,8 +1329,9 @@
         const meta = $("routeMeta");
         if (meta) {
             const when = result?.requested?.label;
+            const nextService = result?.next_service?.automatic;
             meta.textContent = routes.length
-                ? `${when ? `Leaving ${when.toLowerCase()} · ` : ""}${routes.length} option${routes.length === 1 ? "" : "s"} · from the BMTC timetable, not live arrivals`
+                ? `${nextService ? "Next morning service · " : (when ? `Leaving ${when.toLowerCase()} · ` : "")}${routes.length} option${routes.length === 1 ? "" : "s"} · from the BMTC timetable, not live arrivals`
                 : "";
         }
 
@@ -1505,7 +1506,9 @@
 
             const routes = normalizeRoutes(result.data);
             if (routes.length) {
-                showStatus(`${routes.length} route option${routes.length === 1 ? "" : "s"} found.`);
+                showStatus(result.data?.next_service?.automatic
+                    ? `${routes.length} next-morning route option${routes.length === 1 ? "" : "s"} found.`
+                    : `${routes.length} route option${routes.length === 1 ? "" : "s"} found.`);
             } else {
                 showStatus(result.data.fallback?.message || "No connected route was found.", true);
             }

@@ -235,6 +235,19 @@ class DepartureTimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             otp._stop(conn, "", {"id": "p", "name": "Mumbai", "lat": 19.07, "lon": 72.87})
 
+    def test_late_night_now_search_moves_to_next_service_morning(self):
+        late = datetime(2026, 10, 13, 23, 40, tzinfo=otp.IST)
+        probe = otp.next_service_probe(late)
+        self.assertEqual((probe.day, probe.hour, probe.minute), (14, 5, 0))
+
+        early = datetime(2026, 10, 14, 2, 10, tzinfo=otp.IST)
+        probe = otp.next_service_probe(early)
+        self.assertEqual((probe.day, probe.hour, probe.minute), (14, 5, 0))
+
+    def test_daytime_no_result_is_not_silently_moved(self):
+        daytime = datetime(2026, 10, 14, 13, 0, tzinfo=otp.IST)
+        self.assertIsNone(otp.next_service_probe(daytime))
+
 
 # ---------------------------------------------------------------- stop search
 class StopSearchTests(unittest.TestCase):
