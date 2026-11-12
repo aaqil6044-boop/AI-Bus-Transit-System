@@ -73,6 +73,33 @@ class GeminiAssistantTests(unittest.TestCase):
         self.assertEqual(args[3], {"preference": "less_walking", "depart_at": "21:30"})
         self.assertEqual(fake.calls[0]["url"].rsplit("/", 1)[-1], "gemini-3.1-flash-lite:generateContent")
 
+    def test_time_alone_does_not_skip_gemini_when_places_are_unknown(self):
+        # "need to reach X by 10 am from Y": the time used to count as "understood", so Gemini was never asked.
+        fake = FakeGemini(data=call("plan_journey", origin="White Field Post Office", destination="Kempegowda Bus Station",
+                                    depart_at="10:00"))
+        with patch.object(gemini, "_post", fake), patch.object(assistant, "plan_journey", return_value=PLAN):
+            result = assistant.handle_assistant(self.db, {"message": "need to reach majestic by 10 am from whitefield post office"},
+                                                now=NOW)
+        self.assertEqual(result["engine"], "gemini")
+        self.assertEqual(result["intent"], "plan")
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_clear_command_still_skips_gemini(self):
+        fake = FakeGemini(data=call("plan_journey", origin="Hoodi", destination="Hoodi"))
+        with patch.object(gemini, "_post", fake), patch.object(assistant, "plan_journey", return_value=PLAN):
+            result = assistant.handle_assistant(self.db, {"message": "White Field Post Office to Kempegowda Bus Station at 9:30 am"},
+                                                now=NOW)
+        self.assertEqual(result["engine"], "built-in")
+        self.assertEqual(fake.calls, [], "a fully understood command answers instantly")
+
+    def test_gemini_down_is_asked_once_and_built_in_answers(self):
+        fake = FakeGemini(status=429)
+        with patch.object(gemini, "_post", fake), patch.object(assistant, "plan_journey", return_value=PLAN):
+            result = assistant.handle_assistant(self.db, {"message": "need to reach atlantis by 10 am from narnia"}, now=NOW)
+        self.assertEqual(result["engine"], "built-in")
+        self.assertLessEqual(len(fake.calls), 3, "one Gemini request (with its own retry and fallback model), never a second round")
+        self.assertIn("quota", result.get("notice", ""))
+
     def test_place_gemini_invents_is_never_planned(self):
         fake = FakeGemini(data=call("plan_journey", origin="Atlantis Bus Stand", destination="Hoodi",
                                     preference="", depart_at=""))

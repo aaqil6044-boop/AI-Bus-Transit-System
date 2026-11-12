@@ -271,10 +271,15 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
     place_terms = [rules.get(key) for key in ("origin", "destination") if rules.get(key)]
     places_understood = bool(place_terms) and all(
         _saved_place(payload, term) is not None or resolve_place(database, term, look_up=False)[0] for term in place_terms)
-    locally_understood = places_understood or any((rules.get("preference"), rules.get("depart_at"),
-                                                   rules.get("swap"), rules.get("from_here"), rules.get("live")))
+    # A time or preference alone ("by 10 am", "less walking") does not mean the sentence was understood:
+    # when the message names places, skip Gemini only if every place was recognised.
+    if place_terms:
+        locally_understood = places_understood
+    else:
+        locally_understood = any((rules.get("preference"), rules.get("depart_at"),
+                                  rules.get("swap"), rules.get("from_here"), rules.get("live")))
     engine, notice, ai = "built-in", "", None
-    if gemini.settings()["enabled"] and (gemini_transport is not None or not locally_understood):
+    if gemini.settings()["enabled"] and (gemini_transport is not None or payload.get("_force_gemini") or not locally_understood):
         origin_now = _context_to_stop(_context_stop(payload.get("origin")))
         destination_now = _context_to_stop(_context_stop(payload.get("destination")))
         try:
@@ -316,6 +321,15 @@ def handle_assistant(database, payload: dict, now=None, gemini_transport=None) -
             reply = _from_here(database, payload, parsed, rules if ai is not None else None)
         else:
             reply = _answer(database, payload, parsed, rules if ai is not None else None, now)
+    if (ai is None and not notice and reply.get("intent") == "error" and gemini.settings()["enabled"]
+            and gemini_transport is None and not payload.get("_force_gemini")):
+        # The quick built-in reader could not make sense of the places: let Gemini read the whole sentence.
+        try:
+            retry = handle_assistant(database, {**payload, "_force_gemini": True}, now=now)
+            if retry.get("engine") == "gemini":
+                return retry
+        except ValueError:
+            pass
     reply["engine"] = engine
     if notice:
         reply["notice"] = notice
